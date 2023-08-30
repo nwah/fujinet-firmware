@@ -168,6 +168,8 @@ void sioNetwork::sio_open()
     json = new FNJSON();
     json->setLineEnding("\x9b");
     json->setProtocol(protocol);
+    neon = new NeonMake(); // TODO: lazily instantiate?
+    neon->setProtocol(protocol);
     channelMode = PROTOCOL;
 
     // And signal complete!
@@ -212,6 +214,9 @@ void sioNetwork::sio_close()
 
     if (json != nullptr)
         delete json;
+
+    if (neon != nullptr)
+        delete neon;
 
     if (newData)
         free(newData);
@@ -281,6 +286,20 @@ bool sioNetwork::sio_read_channel_json(unsigned short num_bytes)
 }
 
 /**
+ * @brief Perform read of the current JSON channel
+ * @param num_bytes Number of bytes to read
+ */
+bool sioNetwork::sio_read_channel_neon(unsigned short num_bytes)
+{
+    if (num_bytes > neon_bytes_remaining)
+        neon_bytes_remaining = 0;
+    else
+        neon_bytes_remaining -= num_bytes;
+
+    return false;
+}
+
+/**
  * Perform the channel read based on the channelMode
  * @param num_bytes - number of bytes to read from channel.
  * @return TRUE on error, FALSE on success. Passed directly to bus_to_computer().
@@ -296,6 +315,9 @@ bool sioNetwork::sio_read_channel(unsigned short num_bytes)
         break;
     case JSON:
         err = sio_read_channel_json(num_bytes);
+        break;
+    case NEON:
+        err = sio_read_channel_neon(num_bytes);
         break;
     }
     return err;
@@ -371,6 +393,10 @@ bool sioNetwork::sio_write_channel(unsigned short num_bytes)
         Debug_printf("JSON Not Handled.\n");
         err = true;
         break;
+    case NEON:
+        Debug_printf("NEON Not Handled.\n");
+        err = true;
+        break;
     }
     return err;
 }
@@ -441,6 +467,14 @@ bool sioNetwork::sio_status_channel_json(NetworkStatus *ns)
     return false; // for now
 }
 
+bool sioNetwork::sio_status_channel_neon(NetworkStatus *ns)
+{
+    ns->connected = neon_bytes_remaining > 0;
+    ns->error = neon_bytes_remaining > 0 ? 1 : 136;
+    ns->rxBytesWaiting = neon_bytes_remaining;
+    return false;
+}
+
 /**
  * @brief perform channel status commands, if there is a protocol bound.
  */
@@ -458,6 +492,9 @@ void sioNetwork::sio_status_channel()
         break;
     case JSON:
         sio_status_channel_json(&status);
+        break;
+    case NEON:
+        sio_status_channel_neon(&status);
         break;
     }
     // clear forced flag (first status after open)
@@ -591,6 +628,10 @@ void sioNetwork::sio_set_channel_mode()
         channelMode = JSON;
         sio_complete();
         break;
+    case 2:
+        channelMode = NEON;
+        sio_complete();
+        break;
     default:
         sio_error();
     }
@@ -720,6 +761,10 @@ void sioNetwork::do_inquiry(unsigned char inq_cmd)
             if (channelMode == JSON)
                 inq_dstats = 0x80;
             break;
+        case 'N': // Neon ADF compile
+            if (channelMode == NEON)
+                inq_dstats = 0x00;
+            break;
         default:
             inq_dstats = 0xFF; // not supported
             break;
@@ -742,6 +787,10 @@ void sioNetwork::sio_special_00()
     case 'P':
         if (channelMode == JSON)
             sio_parse_json();
+        break;
+    case 'N':
+        if (channelMode == NEON)
+            sio_parse_adf();
         break;
     case 'T':
         sio_set_translation();
@@ -1105,6 +1154,22 @@ void sioNetwork::sio_set_json_query()
     *receiveBuffer += string((const char *)tmp,json_bytes_remaining);
     free(tmp);
     Debug_printf("Query set to %s\n",inp);
+    sio_complete();
+}
+
+void sioNetwork::sio_parse_adf()
+{
+    int docLen;
+    uint8_t *tmp;
+
+    neon->parse();
+    docLen = neon->readDocLen();
+    neon_bytes_remaining = docLen;
+    tmp = (uint8_t *)malloc(docLen);
+    neon->readDoc(tmp, docLen);
+    *receiveBuffer += string((const char *)tmp, docLen);
+    free(tmp);
+
     sio_complete();
 }
 

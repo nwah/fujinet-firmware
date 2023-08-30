@@ -13,6 +13,7 @@
 #include "networkStatus.h"
 #include "status_error_codes.h"
 #include "fnjson.h"
+#include "neonmake.h"
 #include "ProtocolParser.h"
 
 /**
@@ -235,7 +236,8 @@ private:
     enum _channel_mode
     {
         PROTOCOL,
-        JSON
+        JSON,
+        NEON
     } channelMode;
 
     /**
@@ -253,6 +255,16 @@ private:
      * Bytes sent of current JSON query object.
      */
     unsigned short json_bytes_remaining=0;
+
+    /**
+     * The fnJSON parser wrapper object
+     */
+    NeonMake *neon;
+
+    /**
+     * Bytes sent of compile Neon document.
+     */
+    unsigned short neon_bytes_remaining = 0;
 
     /**
      * @brief the write buffer
@@ -312,6 +324,12 @@ private:
     bool sio_read_channel_json(unsigned short num_bytes);
 
     /**
+     * @brief Perform read of the current NEON channel
+     * @param num_bytes Number of bytes to read
+     */
+    bool sio_read_channel_neon(unsigned short num_bytes);
+
+    /**
      * Perform the correct write based on value of channelMode
      * @param num_bytes Number of bytes to write.
      * @return TRUE on error, FALSE on success. Used to emit sio_error or sio_complete().
@@ -333,6 +351,11 @@ private:
      * @brief get JSON status (# of bytes in receive channel)
      */
     bool sio_status_channel_json(NetworkStatus *ns);
+
+    /**
+     * @brief get Neon status (# of bytes in receive channel)
+     */
+    bool sio_status_channel_neon(NetworkStatus *ns);
 
     /**
      * @brief Do an inquiry to determine whether a protoocol supports a particular command.
@@ -390,6 +413,11 @@ private:
      * @brief Set JSON query string. (must be in JSON channelMode)
      */
     void sio_set_json_query();
+
+    /**
+     * @brief Parse incoming ADF. (must be in NEON channelMode)
+     */
+    void sio_parse_adf();
 
     /**
      * @brief Set timer rate for PROCEED timer in ms
