@@ -34,7 +34,7 @@
 
 #include "base64.h"
 #include "hash.h"
-#include "../../qrcode/qrmanager.h"
+#include "qrmanager.h"
 
 #define ADDITIONAL_DETAILS_BYTES 10
 

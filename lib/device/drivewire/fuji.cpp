@@ -1603,6 +1603,100 @@ void drivewireFuji::hash_clear()
     errorCode = 1;
 }
 
+void drivewireFuji::qrcode_input()
+{
+    uint8_t lenl = fnDwCom.read();
+    uint8_t lenh = fnDwCom.read();
+    uint16_t len = lenh << 8 | lenl;
+
+    Debug_printf("FUJI: QRCODE INPUT (len: %d)\n", len);
+    if (!len)
+    {
+        Debug_printf("Invalid length. Aborting");
+        errorCode = 144;
+        return;
+    }
+
+    std::vector<uint8_t> data(len, 0);
+    fnDwCom.readBytes(data.data(), len);
+
+    qrManager.in_buf += std::string((const char *)data.data(), len);
+}
+
+void drivewireFuji::qrcode_encode()
+{
+    size_t out_len = 0;
+
+    qrManager.output_mode = 0;
+    qrManager.version = fnDwCom.read() & 0b01111111;
+    qrManager.ecc_mode = fnDwCom.read();
+    bool shorten = fnDwCom.read() == 1;
+
+    Debug_printf("FUJI: QRCODE ENCODE\n");
+    Debug_printf("QR Version: %d, ECC: %d, Shorten: %s\n", qrManager.version, qrManager.ecc_mode, shorten ? "Y" : "N");
+
+    std::string url = qrManager.in_buf;
+
+    if (shorten) {
+        url = fnHTTPD.shorten_url(url);
+    }
+
+    std::vector<uint8_t> p = QRManager::encode(
+        url.c_str(),
+        url.size(),
+        qrManager.version,
+        qrManager.ecc_mode,
+        &out_len
+    );
+
+    qrManager.in_buf.clear();
+
+    if (!out_len)
+    {
+        Debug_printf("QR code encoding failed\n");
+        return;
+    }
+
+    Debug_printf("Resulting QR code is: %u modules\n", out_len);
+}
+
+void drivewireFuji::qrcode_length()
+{
+    Debug_printf("FUJI: QRCODE LENGTH\n");
+
+    uint8_t output_mode = fnDwCom.read();
+    Debug_printf("Output mode: %i\n", output_mode);
+
+    size_t len = qrManager.out_buf.size();
+
+    if (len && (output_mode != qrManager.output_mode)) {
+        if (output_mode == QR_OUTPUT_MODE_BINARY) {
+            qrManager.to_binary();
+        }
+        else if (output_mode == QR_OUTPUT_MODE_ATASCII) {
+            qrManager.to_atascii();
+        }
+        else if (output_mode == QR_OUTPUT_MODE_BITMAP) {
+            qrManager.to_bitmap();
+        }
+        qrManager.output_mode = output_mode;
+    }
+
+    response = std::string((const char *)&len, 2);
+    errorCode = 1;
+}
+
+void drivewireFuji::qrcode_output()
+{
+    Debug_printf("FUJI: QRCODE OUTPUT\n");
+    response = std::string(qrManager.out_buf.begin(), qrManager.out_buf.end());
+
+	qrManager.out_buf.erase(qrManager.out_buf.begin(), qrManager.out_buf.end());
+    qrManager.out_buf.shrink_to_fit();
+
+    errorCode = 1;
+}
+
 // Initializes base settings and adds our devices to the DRIVEWIRE bus
 void drivewireFuji::setup(systemBus *drivewirebus)
 {
@@ -1818,6 +1912,18 @@ void drivewireFuji::process()
         break;
     case FUJICMD_HASH_CLEAR:
         hash_clear();
+        break;
+    case FUJICMD_QRCODE_INPUT:
+        qrcode_input();
+        break;
+    case FUJICMD_QRCODE_ENCODE:
+        qrcode_encode();
+        break;
+    case FUJICMD_QRCODE_LENGTH:
+        qrcode_length();
+        break;
+    case FUJICMD_QRCODE_OUTPUT:
+        qrcode_output();
         break;
     case FUJICMD_SET_BOOT_MODE:
         set_boot_mode();

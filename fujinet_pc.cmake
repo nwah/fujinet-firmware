@@ -41,7 +41,7 @@ if(FUJINET_TARGET STREQUAL "APPLE")
     set_property(CACHE SLIP_PROTOCOL PROPERTY STRINGS "NET" "COM")
 
     if(NOT SLIP_PROTOCOL STREQUAL "NET" AND NOT SLIP_PROTOCOL STREQUAL "COM")
-      message(FATAL_ERROR "Invalid value for SLIP_PROTOCOL: ${SLIP_PROTOCOL}. Please choose either NET or COM.")
+        message(FATAL_ERROR "Invalid value for SLIP_PROTOCOL: ${SLIP_PROTOCOL}. Please choose either NET or COM.")
     endif()
 
     # convert to values for C++ code to use as macros
@@ -128,6 +128,7 @@ set(INCLUDE_DIRS include
     lib/encrypt lib/base64
     lib/devrelay/commands lib/devrelay/service lib/devrelay/slip lib/devrelay/types
     lib/encoding
+    lib/qrcode
     components_pc/mongoose
     components_pc/cJSON
     components_pc/libsmb2/include

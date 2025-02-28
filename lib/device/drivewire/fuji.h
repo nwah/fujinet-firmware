@@ -8,12 +8,14 @@
 #include "disk.h"
 #include "network.h"
 #include "cassette.h"
+#include "httpService.h"
 
 #include "fujiHost.h"
 #include "fujiDisk.h"
 #include "fujiCmd.h"
 
 #include "hash.h"
+#include "qrmanager.h"
 
 #define MAX_HOSTS 8
 #define MAX_DISK_DEVICES 4
@@ -166,6 +168,10 @@ protected:
     void hash_output();            // 0xC5
     void get_adapter_config_extended(); // 0xC4
     void hash_clear();             // 0xC2
+    void qrcode_input();           // 0xBC
+    void qrcode_encode();          // 0xBD
+    void qrcode_length();          // OxBE
+    void qrcode_output();          // 0xBF
 
     void send_error();             // 0x02
     void send_response();          // 0x01
