@@ -14,6 +14,7 @@ enum fujiHostType
     HOSTTYPE_SMB,
     HOSTTYPE_FTP,
     HOSTTYPE_HTTP,
+    HOSTTYPE_GOOGLEDRIVE,
 };
 
 class fujiHost
@@ -33,6 +34,7 @@ private:
     int mount_smb();
     int mount_ftp();
     int mount_http();
+    int mount_googledrive();
 
     int unmount_local();
     int unmount_fs();

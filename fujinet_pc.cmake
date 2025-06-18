@@ -175,6 +175,7 @@ set(SOURCES src/main.cpp
     lib/FileSystem/fnFsSMB.h lib/FileSystem/fnFsSMB.cpp
     lib/FileSystem/fnFsFTP.h lib/FileSystem/fnFsFTP.cpp
     lib/FileSystem/fnFsHTTP.h lib/FileSystem/fnFsHTTP.cpp
+    lib/FileSystem/fnFsGoogleDrive.h lib/FileSystem/fnFsGoogleDrive.cpp
     lib/FileSystem/fnFile.h lib/FileSystem/fnFile.cpp
     lib/FileSystem/fnFileLocal.h lib/FileSystem/fnFileLocal.cpp
     lib/FileSystem/fnFileTNFS.h lib/FileSystem/fnFileTNFS.cpp

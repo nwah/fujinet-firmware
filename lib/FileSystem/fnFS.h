@@ -40,6 +40,7 @@ enum fsType
     FSTYPE_SMB,
     FSTYPE_FTP,
     FSTYPE_HTTP,
+    FSTYPE_GOOGLEDRIVE,
     FSTYPE_COUNT
 };
 

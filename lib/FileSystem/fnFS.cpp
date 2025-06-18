@@ -90,6 +90,8 @@ const char * FileSystem::type_to_string(fsType type)
             return "FS_FTP";
         case FSTYPE_HTTP:
             return "FS_HTTP";
+        case FSTYPE_GOOGLEDRIVE:
+            return "FS_GOOGLEDRIVE";
         default:
             return "UNKNOWN FS TYPE";
     }

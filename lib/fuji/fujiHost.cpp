@@ -10,6 +10,7 @@
 #include "fnFsSMB.h"
 #include "fnFsFTP.h"
 #include "fnFsHTTP.h"
+#include "fnFsGoogleDrive.h"
 
 #include "utils.h"
 
@@ -48,6 +49,7 @@ void fujiHost::set_type(fujiHostType type)
     case HOSTTYPE_SMB:
     case HOSTTYPE_FTP:
     case HOSTTYPE_HTTP:
+    case HOSTTYPE_GOOGLEDRIVE:
         cleanup();
         break;
     }
@@ -111,6 +113,7 @@ uint16_t fujiHost::dir_tell()
     case HOSTTYPE_SMB:
     case HOSTTYPE_FTP:
     case HOSTTYPE_HTTP:
+    case HOSTTYPE_GOOGLEDRIVE:
         result = _fs->dir_tell();
         break;
     case HOSTTYPE_UNINITIALIZED:
@@ -133,6 +136,7 @@ bool fujiHost::dir_seek(uint16_t pos)
     case HOSTTYPE_SMB:
     case HOSTTYPE_FTP:
     case HOSTTYPE_HTTP:
+    case HOSTTYPE_GOOGLEDRIVE:
         result = _fs->dir_seek(pos);
         break;
     case HOSTTYPE_UNINITIALIZED:
@@ -165,6 +169,7 @@ bool fujiHost::dir_open(const char *path, const char *pattern, uint16_t options)
     case HOSTTYPE_SMB:
     case HOSTTYPE_FTP:
     case HOSTTYPE_HTTP:
+    case HOSTTYPE_GOOGLEDRIVE:
         result = _fs->dir_open(realpath, pattern, options);
         break;
     case HOSTTYPE_UNINITIALIZED:
@@ -184,6 +189,7 @@ fsdir_entry_t *fujiHost::dir_nextfile()
     case HOSTTYPE_SMB:
     case HOSTTYPE_FTP:
     case HOSTTYPE_HTTP:
+    case HOSTTYPE_GOOGLEDRIVE:
         return _fs->dir_read();
     case HOSTTYPE_UNINITIALIZED:
         break;
@@ -483,6 +489,79 @@ int fujiHost::mount_http()
     return -1;
 }
 
+int fujiHost::mount_googledrive()
+{
+    Debug_printf("::mount_googledrive {%d:%d} \"%s\"\n", slotid, _type, _hostname);
+
+    // Don't do anything if that's already what's set
+    if (_type == HOSTTYPE_GOOGLEDRIVE)
+    {
+        if (_fs != nullptr && _fs->running())
+        {
+            Debug_printf("::mount_googledrive Currently connected to \"%s\"\n", _hostname);
+            return 0;
+        }
+    }
+    else
+        set_type(HOSTTYPE_GOOGLEDRIVE); // Only start fresh if not HOSTTYPE_GOOGLEDRIVE
+
+    _fs = new FileSystemGoogleDrive;
+
+    if (_fs == nullptr)
+    {
+        Debug_println("Couldn't create a new FileSystemGoogleDrive in fujiHost::mount_googledrive!");
+    }
+    else
+    {
+        Debug_printf("Starting FileSystemGoogleDrive(\"%s\")\n", _hostname);
+
+        // OAuth credentials would need to be configured via settings or stored in EEPROM
+        // For now, we'll need to implement a way to get these from the user
+        // This is a placeholder implementation - in a real system these would come from:
+        // 1. Configuration file
+        // 2. EEPROM/Flash storage
+        // 3. User input during setup
+        // 4. Environment variables (for development)
+        
+        // Example of how this might work:
+        // const char* client_id = fnConfig.get_google_client_id();
+        // const char* client_secret = fnConfig.get_google_client_secret();
+        // const char* access_code = fnConfig.get_google_access_code();
+        
+        // For development/testing, these could be set via environment or compile-time defines
+        #ifdef GOOGLE_DRIVE_CLIENT_ID
+        const char* client_id = GOOGLE_DRIVE_CLIENT_ID;
+        #else
+        const char* client_id = "";
+        #endif
+        
+        #ifdef GOOGLE_DRIVE_CLIENT_SECRET
+        const char* client_secret = GOOGLE_DRIVE_CLIENT_SECRET;
+        #else
+        const char* client_secret = "";
+        #endif
+        
+        #ifdef GOOGLE_DRIVE_ACCESS_CODE
+        const char* access_code = GOOGLE_DRIVE_ACCESS_CODE;
+        #else
+        const char* access_code = "";
+        #endif
+
+        if (strlen(client_id) == 0 || strlen(client_secret) == 0|| strlen(access_code) == 0)
+        {
+            Debug_println("Google Drive OAuth credentials not configured");
+            return -1;
+        }
+
+        if (((FileSystemGoogleDrive *)_fs)->start(client_id, client_secret, access_code))
+        {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
 int fujiHost::unmount_fs()
 {
     Debug_printf("Filesystem (%s) unmounted.\n", _fs != nullptr ? _fs->typestring() : "null");
@@ -525,6 +604,9 @@ bool fujiHost::mount()
 
     if (0 == strncasecmp("http://", _hostname, 7) || 0 == strncasecmp("https://", _hostname, 8))
         return 0 == mount_http();
+
+    if (0 == strncasecmp("drive.google.com", _hostname, 16))
+        return 0 == mount_googledrive();
 
     // Try mounting TNFS last
     return 0 == mount_tnfs();
