@@ -133,6 +133,7 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
         FN_CPM_CCP,
         FN_ALT_CFG,
         FN_PCLINK_ENABLED,
+        FN_OAUTH_GOOGLE_STATUS,
         FN_LASTTAG
     };
 
@@ -251,6 +252,7 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
         "FN_CPM_CCP",
         "FN_ALT_CFG",
         "FN_PCLINK_ENABLED",
+        "FN_OAUTH_GOOGLE_STATUS",
     };
 
     stringstream resultstream;
@@ -351,6 +353,17 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
         resultstream << Config.get_pclink_enabled();
         break;
 #endif /* BUILD_ATARI */
+
+    case FN_OAUTH_GOOGLE_STATUS:
+        {
+            extern std::string g_google_oauth_code;
+            if (!g_google_oauth_code.empty()) {
+                resultstream << "Connected";
+            } else {
+                resultstream << "Not Connected";
+            }
+        }
+        break;
 
     case FN_ROTATION_SOUNDS:
         resultstream << Config.get_general_rotation_sounds();

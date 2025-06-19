@@ -144,6 +144,7 @@ public:
     static esp_err_t get_handler_hosts(httpd_req_t *req);
     static esp_err_t post_handler_hosts(httpd_req_t *req);
     static esp_err_t get_handler_shorturl(httpd_req_t *req);
+    static esp_err_t get_handler_oauth_google(httpd_req_t *req);
 
 #ifdef BUILD_ADAM
     static esp_err_t get_handler_term(httpd_req_t *req);
@@ -165,12 +166,14 @@ public:
 
     static int get_handler_browse(mg_connection *c, mg_http_message *hm);
     static int get_handler_shorturl(mg_connection *c, mg_http_message *hm);
+    static int get_handler_oauth_google(mg_connection *c, mg_http_message *hm);
 
     void service();
 // !ESP_PLATFORM
 #endif
 
     std::string shorten_url(std::string url);
+    char *url_encode(char *str);
 
     void start();
     void stop();

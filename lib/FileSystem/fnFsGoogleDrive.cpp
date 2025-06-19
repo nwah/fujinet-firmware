@@ -9,9 +9,17 @@
 #include "compat_string.h"
 
 #include "../../include/debug.h"
+#include "../../include/secrets.h"
 
 #include "fnSystem.h"
 #include "fnFileCache.h"
+#ifdef ESP_PLATFORM
+#include "../http/httpService.h"
+// External declaration for httpService url_encode function
+extern char *url_encode(char *str);
+#else
+#include "../../components_pc/mongoose/mongoose.h"
+#endif
 
 // Google Drive API constants
 const char* FileSystemGoogleDrive::GDRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
@@ -49,17 +57,22 @@ FileSystemGoogleDrive::~FileSystemGoogleDrive()
         delete _json;
 }
 
-bool FileSystemGoogleDrive::start(const char* client_id, const char* client_secret, const char* access_code)
+bool FileSystemGoogleDrive::start()
 {
     if (_started)
         return false;
 
-    if (client_id == nullptr || client_secret == nullptr || access_code == nullptr)
+    // Get OAuth code from global variable
+    extern std::string g_google_oauth_code;
+    if (g_google_oauth_code.empty())
+    {
+        Debug_println("FileSystemGoogleDrive::start() - No OAuth code available");
         return false;
+    }
 
-    _client_id = client_id;
-    _client_secret = client_secret;
-    _access_code = access_code;
+    _client_id = GOOGLE_DRIVE_CLIENT_ID;
+    _client_secret = GOOGLE_DRIVE_CLIENT_SECRET;
+    _access_code = g_google_oauth_code;
 
     if (_http != nullptr)
     {
@@ -100,11 +113,46 @@ bool FileSystemGoogleDrive::start(const char* client_id, const char* client_secr
 
 bool FileSystemGoogleDrive::exchange_oauth_code()
 {
-    std::string post_data = "code=" + url_encode(_access_code) +
-                           "&client_id=" + url_encode(_client_id) +
-                           "&client_secret=" + url_encode(_client_secret) +
-                           "&redirect_uri=" + url_encode("urn:ietf:wg:oauth:2.0:oob") +
+#ifdef ESP_PLATFORM
+    char *encoded_access_code = url_encode(const_cast<char*>(_access_code.c_str()));
+    char *encoded_client_id = url_encode(const_cast<char*>(_client_id.c_str()));
+    char *encoded_client_secret = url_encode(const_cast<char*>(_client_secret.c_str()));
+    std::string redirect_uri_str = "http://";
+    redirect_uri_str += fnSystem.Net.get_ip4_address_str();
+    redirect_uri_str += "/oauth/google";
+    char *encoded_redirect_uri = url_encode(const_cast<char*>(redirect_uri_str.c_str()));
+
+    std::string post_data = "code=" + std::string(encoded_access_code) +
+                           "&client_id=" + std::string(encoded_client_id) +
+                           "&client_secret=" + std::string(encoded_client_secret) +
+                           "&redirect_uri=" + std::string(encoded_redirect_uri) +
                            "&grant_type=authorization_code";
+
+    free(encoded_access_code);
+    free(encoded_client_id);
+    free(encoded_client_secret);
+    free(encoded_redirect_uri);
+#else
+    char encoded_access_code[1024];
+    char encoded_client_id[1024];
+    char encoded_client_secret[1024];
+    char encoded_redirect_uri[1024];
+
+    mg_url_encode(_access_code.c_str(), _access_code.length(), encoded_access_code, sizeof(encoded_access_code));
+    mg_url_encode(_client_id.c_str(), _client_id.length(), encoded_client_id, sizeof(encoded_client_id));
+    mg_url_encode(_client_secret.c_str(), _client_secret.length(), encoded_client_secret, sizeof(encoded_client_secret));
+    std::string redirect_uri_str = "http://";
+    // redirect_uri_str += fnSystem.Net.get_ip4_address_str();
+    redirect_uri_str += "localhost";
+    redirect_uri_str += ":8000/oauth/google";
+    mg_url_encode(redirect_uri_str.c_str(), redirect_uri_str.length(), encoded_redirect_uri, sizeof(encoded_redirect_uri));
+
+    std::string post_data = "code=" + std::string(encoded_access_code) +
+                           "&client_id=" + std::string(encoded_client_id) +
+                           "&client_secret=" + std::string(encoded_client_secret) +
+                           "&redirect_uri=" + std::string(encoded_redirect_uri) +
+                           "&grant_type=authorization_code";
+#endif
 
     if (!_http->begin(OAUTH_TOKEN_URL))
     {
@@ -113,25 +161,37 @@ bool FileSystemGoogleDrive::exchange_oauth_code()
     }
 
     _http->set_header("Content-Type", "application/x-www-form-urlencoded");
-    
+    Debug_printf("Sending POST data: %s\n", post_data.c_str());
+    Debug_printf("POST URL: %s\n", OAUTH_TOKEN_URL);
+    Debug_printf("Access code: %s\n", _access_code.c_str());
+    Debug_printf("Client ID: %s\n", _client_id.c_str());
+
     int response_code = _http->POST(post_data.c_str(), post_data.length());
+    Debug_printf("POST response code: %d\n", response_code);
+
+    if (response_code < 0)
+    {
+        Debug_printf("FileSystemGoogleDrive::exchange_oauth_code - POST failed with error code %d (connection/network error)\n", response_code);
+        return false;
+    }
+
     if (response_code != 200)
     {
-        Debug_printf("FileSystemGoogleDrive::exchange_oauth_code - POST failed with code %d\n", response_code);
-        return false;
+        Debug_printf("FileSystemGoogleDrive::exchange_oauth_code - POST failed with HTTP status code %d\n", response_code);
+        // Continue to read response body to see error details
     }
 
     // Read response
     std::string response_body;
     int available;
     char buffer[512];
-    
+
     while (_http->available() > 0)
     {
         available = _http->available();
         if (available > sizeof(buffer) - 1)
             available = sizeof(buffer) - 1;
-        
+
         int bytes_read = _http->read((uint8_t*)buffer, available);
         if (bytes_read > 0)
         {
@@ -140,17 +200,32 @@ bool FileSystemGoogleDrive::exchange_oauth_code()
         }
     }
 
+    Debug_printf("Response body length: %d\n", response_body.length());
+    Debug_printf("Response body: %s\n", response_body.c_str());
+
+    if (response_code != 200)
+    {
+        Debug_printf("FileSystemGoogleDrive::exchange_oauth_code - HTTP error %d, response: %s\n", response_code, response_body.c_str());
+        return false;
+    }
+
+    if (response_body.empty())
+    {
+        Debug_println("FileSystemGoogleDrive::exchange_oauth_code - empty response body");
+        return false;
+    }
+
     // Parse JSON response
     cJSON* json = cJSON_Parse(response_body.c_str());
     if (json == nullptr)
     {
-        Debug_println("FileSystemGoogleDrive::exchange_oauth_code - failed to parse JSON response");
+        Debug_printf("FileSystemGoogleDrive::exchange_oauth_code - failed to parse JSON response: %s\n", response_body.c_str());
         return false;
     }
 
     cJSON* access_token = cJSON_GetObjectItem(json, "access_token");
     cJSON* refresh_token = cJSON_GetObjectItem(json, "refresh_token");
-    
+
     if (access_token == nullptr || !cJSON_IsString(access_token))
     {
         Debug_println("FileSystemGoogleDrive::exchange_oauth_code - no access_token in response");
@@ -159,7 +234,7 @@ bool FileSystemGoogleDrive::exchange_oauth_code()
     }
 
     _access_token = access_token->valuestring;
-    
+
     if (refresh_token != nullptr && cJSON_IsString(refresh_token))
     {
         _refresh_token = refresh_token->valuestring;
@@ -175,10 +250,33 @@ bool FileSystemGoogleDrive::refresh_access_token()
     if (_refresh_token.empty())
         return false;
 
-    std::string post_data = "refresh_token=" + url_encode(_refresh_token) +
-                           "&client_id=" + url_encode(_client_id) +
-                           "&client_secret=" + url_encode(_client_secret) +
+#ifdef ESP_PLATFORM
+    char *encoded_refresh_token = url_encode(const_cast<char*>(_refresh_token.c_str()));
+    char *encoded_client_id = url_encode(const_cast<char*>(_client_id.c_str()));
+    char *encoded_client_secret = url_encode(const_cast<char*>(_client_secret.c_str()));
+
+    std::string post_data = "refresh_token=" + std::string(encoded_refresh_token) +
+                           "&client_id=" + std::string(encoded_client_id) +
+                           "&client_secret=" + std::string(encoded_client_secret) +
                            "&grant_type=refresh_token";
+
+    free(encoded_refresh_token);
+    free(encoded_client_id);
+    free(encoded_client_secret);
+#else
+    char encoded_refresh_token[1024];
+    char encoded_client_id[1024];
+    char encoded_client_secret[1024];
+
+    mg_url_encode(_refresh_token.c_str(), _refresh_token.length(), encoded_refresh_token, sizeof(encoded_refresh_token));
+    mg_url_encode(_client_id.c_str(), _client_id.length(), encoded_client_id, sizeof(encoded_client_id));
+    mg_url_encode(_client_secret.c_str(), _client_secret.length(), encoded_client_secret, sizeof(encoded_client_secret));
+
+    std::string post_data = "refresh_token=" + std::string(encoded_refresh_token) +
+                           "&client_id=" + std::string(encoded_client_id) +
+                           "&client_secret=" + std::string(encoded_client_secret) +
+                           "&grant_type=refresh_token";
+#endif
 
     if (!_http->begin(OAUTH_TOKEN_URL))
     {
@@ -187,7 +285,7 @@ bool FileSystemGoogleDrive::refresh_access_token()
     }
 
     _http->set_header("Content-Type", "application/x-www-form-urlencoded");
-    
+
     int response_code = _http->POST(post_data.c_str(), post_data.length());
     if (response_code != 200)
     {
@@ -199,13 +297,13 @@ bool FileSystemGoogleDrive::refresh_access_token()
     std::string response_body;
     int available;
     char buffer[512];
-    
+
     while (_http->available() > 0)
     {
         available = _http->available();
         if (available > sizeof(buffer) - 1)
             available = sizeof(buffer) - 1;
-        
+
         int bytes_read = _http->read((uint8_t*)buffer, available);
         if (bytes_read > 0)
         {
@@ -238,7 +336,7 @@ std::string FileSystemGoogleDrive::get_auth_header()
 bool FileSystemGoogleDrive::make_api_request(const std::string& endpoint, const std::string& method, const std::string& body)
 {
     std::string url = std::string(GDRIVE_API_BASE) + endpoint;
-    
+
     if (!_http->begin(url))
     {
         Debug_printf("FileSystemGoogleDrive::make_api_request - failed to start HTTP client for %s\n", url.c_str());
@@ -246,7 +344,7 @@ bool FileSystemGoogleDrive::make_api_request(const std::string& endpoint, const 
     }
 
     _http->set_header("Authorization", get_auth_header().c_str());
-    
+
     int response_code;
     if (method == "GET")
     {
@@ -298,13 +396,13 @@ std::vector<std::string> FileSystemGoogleDrive::split_path(const char* path)
 
     std::stringstream ss(path_str);
     std::string component;
-    
+
     while (std::getline(ss, component, '/'))
     {
         if (!component.empty())
             components.push_back(component);
     }
-    
+
     return components;
 }
 
@@ -312,7 +410,7 @@ std::string FileSystemGoogleDrive::join_path(const std::vector<std::string>& com
 {
     if (components.empty())
         return "/";
-    
+
     std::string result = "";
     for (const auto& component : components)
     {
@@ -331,8 +429,17 @@ std::string FileSystemGoogleDrive::get_folder_id(const char* path)
 
     for (const auto& component : components)
     {
-        std::string query = "/files?q=" + url_encode("name='" + component + "' and '" + current_folder_id + "' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false");
-        
+        std::string query_string = "name='" + component + "' and '" + current_folder_id + "' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
+#ifdef ESP_PLATFORM
+        char *encoded_query = url_encode(const_cast<char*>(query_string.c_str()));
+        std::string query = "/files?q=" + std::string(encoded_query);
+        free(encoded_query);
+#else
+        char encoded_query[2048];
+        mg_url_encode(query_string.c_str(), query_string.length(), encoded_query, sizeof(encoded_query));
+        std::string query = "/files?q=" + std::string(encoded_query);
+#endif
+
         if (!make_api_request(query))
             return "";
 
@@ -340,13 +447,13 @@ std::string FileSystemGoogleDrive::get_folder_id(const char* path)
         std::string response_body;
         int available;
         char buffer[1024];
-        
+
         while (_http->available() > 0)
         {
             available = _http->available();
             if (available > sizeof(buffer) - 1)
                 available = sizeof(buffer) - 1;
-            
+
             int bytes_read = _http->read((uint8_t*)buffer, available);
             if (bytes_read > 0)
             {
@@ -389,13 +496,22 @@ std::string FileSystemGoogleDrive::get_file_id(const char* path)
 
     std::string filename = components.back();
     components.pop_back();
-    
+
     std::string parent_folder_id = get_folder_id(join_path(components).c_str());
     if (parent_folder_id.empty())
         return "";
 
-    std::string query = "/files?q=" + url_encode("name='" + filename + "' and '" + parent_folder_id + "' in parents and trashed=false");
-    
+    std::string query_string = "name='" + filename + "' and '" + parent_folder_id + "' in parents and trashed=false";
+#ifdef ESP_PLATFORM
+    char *encoded_query = url_encode(const_cast<char*>(query_string.c_str()));
+    std::string query = "/files?q=" + std::string(encoded_query);
+    free(encoded_query);
+#else
+    char encoded_query[2048];
+    mg_url_encode(query_string.c_str(), query_string.length(), encoded_query, sizeof(encoded_query));
+    std::string query = "/files?q=" + std::string(encoded_query);
+#endif
+
     if (!make_api_request(query))
         return "";
 
@@ -403,13 +519,13 @@ std::string FileSystemGoogleDrive::get_file_id(const char* path)
     std::string response_body;
     int available;
     char buffer[1024];
-    
+
     while (_http->available() > 0)
     {
         available = _http->available();
         if (available > sizeof(buffer) - 1)
             available = sizeof(buffer) - 1;
-        
+
         int bytes_read = _http->read((uint8_t*)buffer, available);
         if (bytes_read > 0)
         {
@@ -442,26 +558,29 @@ std::string FileSystemGoogleDrive::get_file_id(const char* path)
     return file_id;
 }
 
-std::string FileSystemGoogleDrive::url_encode(const std::string& value)
+bool FileSystemGoogleDrive::set_oauth_tokens(const std::string& access_token, const std::string& refresh_token)
 {
-    std::ostringstream escaped;
-    escaped.fill('0');
-    escaped << std::hex;
-
-    for (char c : value)
-    {
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
-        {
-            escaped << c;
-        }
-        else
-        {
-            escaped << '%' << std::setw(2) << int((unsigned char)c);
-        }
-    }
-
-    return escaped.str();
+    _access_token = access_token;
+    _refresh_token = refresh_token;
+    return true;
 }
+
+bool FileSystemGoogleDrive::has_valid_tokens() const
+{
+    return !_access_token.empty();
+}
+
+bool FileSystemGoogleDrive::initialize_from_oauth_code(const std::string& oauth_code)
+{
+    _access_code = oauth_code;
+    _client_id = GOOGLE_DRIVE_CLIENT_ID;
+    _client_secret = GOOGLE_DRIVE_CLIENT_SECRET;
+
+    return exchange_oauth_code();
+}
+
+
+
 
 bool FileSystemGoogleDrive::exists(const char* path)
 {
@@ -497,9 +616,9 @@ bool FileSystemGoogleDrive::rename(const char* pathFrom, const char* pathTo)
         return false;
 
     std::string new_name = to_components.back();
-    
+
     std::string json_body = "{\"name\":\"" + new_name + "\"}";
-    
+
     return make_api_request("/files/" + file_id, "POST", json_body);
 }
 
@@ -542,7 +661,7 @@ FileHandler* FileSystemGoogleDrive::cache_file(const char* path, const char* mod
 
     // Download file from Google Drive
     std::string download_url = std::string(GDRIVE_API_BASE) + "/files/" + file_id + "?alt=media";
-    
+
     if (!_http->begin(download_url))
     {
         Debug_println("FileSystemGoogleDrive::cache_file - failed to start HTTP client");
@@ -551,7 +670,7 @@ FileHandler* FileSystemGoogleDrive::cache_file(const char* path, const char* mod
     }
 
     _http->set_header("Authorization", get_auth_header().c_str());
-    
+
     if (_http->GET() > 399)
     {
         Debug_println("FileSystemGoogleDrive::cache_file - GET failed");
@@ -605,14 +724,14 @@ FileHandler* FileSystemGoogleDrive::cache_file(const char* path, const char* mod
                     cancel = true;
                     break;
                 }
-                
+
                 if (FileCache::write(fc, buf, to_read) < to_read)
                 {
                     Debug_printf("FileSystemGoogleDrive::cache_file - Cache write failed\n");
                     cancel = true;
                     break;
                 }
-                
+
                 available = _http->available();
             }
             tmout_counter = 1 + HTTP_GET_TIMEOUT / 50;
@@ -662,13 +781,13 @@ bool FileSystemGoogleDrive::mkdir(const char* path)
 
     std::string folder_name = components.back();
     components.pop_back();
-    
+
     std::string parent_folder_id = get_folder_id(join_path(components).c_str());
     if (parent_folder_id.empty())
         return false;
 
     std::string json_body = "{\"name\":\"" + folder_name + "\",\"mimeType\":\"application/vnd.google-apps.folder\",\"parents\":[\"" + parent_folder_id + "\"]}";
-    
+
     return make_api_request("/files", "POST", json_body);
 }
 
@@ -714,8 +833,17 @@ bool FileSystemGoogleDrive::dir_open(const char* path, const char* pattern, uint
         if (folder_id.empty())
             return false;
 
-        std::string query = "/files?q=" + url_encode("'" + folder_id + "' in parents and trashed=false") + "&fields=files(id,name,mimeType,size,modifiedTime)";
-        
+        std::string query_string = "'" + folder_id + "' in parents and trashed=false";
+#ifdef ESP_PLATFORM
+        char *encoded_query = url_encode(const_cast<char*>(query_string.c_str()));
+        std::string query = "/files?q=" + std::string(encoded_query) + "&fields=files(id,name,mimeType,size,modifiedTime)";
+        free(encoded_query);
+#else
+        char encoded_query[2048];
+        mg_url_encode(query_string.c_str(), query_string.length(), encoded_query, sizeof(encoded_query));
+        std::string query = "/files?q=" + std::string(encoded_query) + "&fields=files(id,name,mimeType,size,modifiedTime)";
+#endif
+
         if (!make_api_request(query))
             return false;
 
@@ -723,13 +851,13 @@ bool FileSystemGoogleDrive::dir_open(const char* path, const char* pattern, uint
         std::string response_body;
         int available;
         char buffer[4096];
-        
+
         while (_http->available() > 0)
         {
             available = _http->available();
             if (available > sizeof(buffer) - 1)
                 available = sizeof(buffer) - 1;
-            
+
             int bytes_read = _http->read((uint8_t*)buffer, available);
             if (bytes_read > 0)
             {
@@ -767,14 +895,14 @@ bool FileSystemGoogleDrive::dir_open(const char* path, const char* pattern, uint
                 continue;
 
             fsdir_entry* fs_de = &_dircache.new_entry();
-            
+
             // File name
             strlcpy(fs_de->filename, name->valuestring, sizeof(fs_de->filename));
-            
+
             // Check if it's a directory
-            fs_de->isDir = (cJSON_IsString(mimeType) && 
+            fs_de->isDir = (cJSON_IsString(mimeType) &&
                            strcmp(mimeType->valuestring, "application/vnd.google-apps.folder") == 0);
-            
+
             // File size
             if (cJSON_IsString(size))
             {
@@ -784,7 +912,7 @@ bool FileSystemGoogleDrive::dir_open(const char* path, const char* pattern, uint
             {
                 fs_de->size = 0;
             }
-            
+
             // Modified time
             fs_de->modified_time = 0;
             if (cJSON_IsString(modifiedTime))

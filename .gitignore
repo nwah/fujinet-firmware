@@ -19,6 +19,7 @@ platformio-device-monitor-*.log
 sdkconfig.*
 
 include/ssid.h
+include/secrets.h
 /*.log
 sdkconfig.fujinet-v1
 include/version.h

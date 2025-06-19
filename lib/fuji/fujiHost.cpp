@@ -14,6 +14,8 @@
 
 #include "utils.h"
 
+
+
 void fujiHost::unmount()
 {
     cleanup();
@@ -515,45 +517,15 @@ int fujiHost::mount_googledrive()
     {
         Debug_printf("Starting FileSystemGoogleDrive(\"%s\")\n", _hostname);
 
-        // OAuth credentials would need to be configured via settings or stored in EEPROM
-        // For now, we'll need to implement a way to get these from the user
-        // This is a placeholder implementation - in a real system these would come from:
-        // 1. Configuration file
-        // 2. EEPROM/Flash storage
-        // 3. User input during setup
-        // 4. Environment variables (for development)
-        
-        // Example of how this might work:
-        // const char* client_id = fnConfig.get_google_client_id();
-        // const char* client_secret = fnConfig.get_google_client_secret();
-        // const char* access_code = fnConfig.get_google_access_code();
-        
-        // For development/testing, these could be set via environment or compile-time defines
-        #ifdef GOOGLE_DRIVE_CLIENT_ID
-        const char* client_id = GOOGLE_DRIVE_CLIENT_ID;
-        #else
-        const char* client_id = "";
-        #endif
-        
-        #ifdef GOOGLE_DRIVE_CLIENT_SECRET
-        const char* client_secret = GOOGLE_DRIVE_CLIENT_SECRET;
-        #else
-        const char* client_secret = "";
-        #endif
-        
-        #ifdef GOOGLE_DRIVE_ACCESS_CODE
-        const char* access_code = GOOGLE_DRIVE_ACCESS_CODE;
-        #else
-        const char* access_code = "";
-        #endif
-
-        if (strlen(client_id) == 0 || strlen(client_secret) == 0|| strlen(access_code) == 0)
+        // Check if we have OAuth tokens available
+        extern std::string g_google_oauth_code;
+        if (g_google_oauth_code.empty())
         {
-            Debug_println("Google Drive OAuth credentials not configured");
+            Debug_println("Google Drive OAuth code not available. Please authorize at /oauth/google");
             return -1;
         }
 
-        if (((FileSystemGoogleDrive *)_fs)->start(client_id, client_secret, access_code))
+        if (((FileSystemGoogleDrive *)_fs)->start())
         {
             return 0;
         }

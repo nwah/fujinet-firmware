@@ -1640,6 +1640,51 @@
 				</form>
 			</div>
 			{% endif %}
+			{% if components.oauth_connections %}
+			<div class="module" {% if components.oauth_connections == "experimental" %}data-experimental{% endif %}>
+				<header class="module-header">OAUTH<span class="logowob"></span>CONNECTIONS</header>
+				<div class="detline">
+					<div class="deth detlinecol">Google Drive</div>
+					<div class="det detlinecol">
+						<span id="oauth-google-status" style="font-weight: bold;"><%FN_OAUTH_GOOGLE_STATUS%></span>
+						<a href="/oauth/google" id="oauth-connect-btn" style="margin-left: 10px; padding: 4px 8px; background-color: #4285f4; color: white; text-decoration: none; border-radius: 3px; font-size: 12px;">CONNECT</a>
+					</div>
+				</div>
+				<div class="detline alt">
+					<div class="deth detlinecol">Info</div>
+					<div class="det detlinecol">
+						<span id="oauth-info" style="font-size: 12px; color: #666;">
+							Click Connect to authorize FujiNet to access your Google Drive account. This enables mounting Google Drive as a network host.
+						</span>
+					</div>
+				</div>
+			</div>
+			<script>
+				// Enhanced OAuth status display
+				document.addEventListener('DOMContentLoaded', function() {
+					var statusElement = document.getElementById('oauth-google-status');
+					var connectBtn = document.getElementById('oauth-connect-btn');
+					var infoElement = document.getElementById('oauth-info');
+					
+					if (statusElement) {
+						var status = statusElement.textContent.trim();
+						if (status === 'Connected') {
+							statusElement.style.color = '#28a745';
+							statusElement.innerHTML = '✓ Connected';
+							connectBtn.textContent = 'RECONNECT';
+							connectBtn.style.backgroundColor = '#28a745';
+							infoElement.textContent = 'Google Drive is authorized and ready to use. Click Reconnect to reauthorize if needed.';
+						} else {
+							statusElement.style.color = '#dc3545';
+							statusElement.innerHTML = '✗ Not Connected';
+							connectBtn.textContent = 'CONNECT';
+							connectBtn.style.backgroundColor = '#4285f4';
+							infoElement.textContent = 'Click Connect to authorize FujiNet to access your Google Drive account. This enables mounting Google Drive as a network host.';
+						}
+					}
+				});
+			</script>
+			{% endif %}
 		</div>
 	</div>
 

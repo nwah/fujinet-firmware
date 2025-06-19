@@ -53,7 +53,14 @@ bool fnHttpClient::begin(const std::string &url)
     cfg.url = url.c_str();
     cfg.event_handler = _httpevent_handler;
     cfg.user_data = this;
-    cfg.timeout_ms = 15000; // Timeouts seem to actually be twice this value (really?)
+    // Enable SSL for HTTPS URLs and increase timeout for OAuth requests
+    if (url.find("https://") == 0) {
+        cfg.use_global_ca_store = true;
+        cfg.skip_cert_common_name_check = false;
+        cfg.timeout_ms = 30000; // Longer timeout for HTTPS OAuth requests
+    } else {
+        cfg.timeout_ms = 15000; // Timeouts seem to actually be twice this value (really?)
+    }
 
     // Keep track of what the max redirect count is set to (the default is 10)
     _max_redirects = cfg.max_redirection_count == 0 ? 10 : cfg.max_redirection_count;

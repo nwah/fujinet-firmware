@@ -23,12 +23,15 @@
 #include "httpServiceBrowser.h"
 
 #include "../../include/debug.h"
-
+#include "../../include/secrets.h"
 
 using namespace std;
 
 // Global HTTPD
 fnHttpService fnHTTPD;
+
+// Global variable to store Google OAuth code
+std::string g_google_oauth_code;
 
 /* Send some meaningful(?) error message to client
 */
@@ -547,6 +550,72 @@ int fnHttpService::get_handler_shorturl(mg_connection *c, mg_http_message *hm)
     return 0;
 }
 
+int fnHttpService::get_handler_oauth_google(mg_connection *c, mg_http_message *hm)
+{
+    Debug_printf("Google OAuth handler: %.*s\n", (int)hm->uri.len, hm->uri.ptr);
+
+    // If no query parameters, redirect to Google OAuth
+    if (hm->query.len == 0)
+    {
+        // Construct Google OAuth URL
+        std::string client_id = GOOGLE_DRIVE_CLIENT_ID;
+        std::string redirect_uri = "http://";
+        redirect_uri += fnSystem.Net.get_ip4_address_str();
+        redirect_uri += ":8000/oauth/google";
+
+        char encoded_redirect_uri[1024];
+        char encoded_client_id[1024];
+        mg_url_encode(redirect_uri.c_str(), redirect_uri.length(), encoded_redirect_uri, sizeof(encoded_redirect_uri));
+        mg_url_encode(client_id.c_str(), client_id.length(), encoded_client_id, sizeof(encoded_client_id));
+
+        std::string oauth_url = "https://accounts.google.com/o/oauth2/v2/auth?";
+        oauth_url += "client_id=" + std::string(encoded_client_id);
+        oauth_url += "&redirect_uri=" + std::string(encoded_redirect_uri);
+        oauth_url += "&response_type=code";
+        oauth_url += "&scope=https://www.googleapis.com/auth/drive";
+        oauth_url += "&access_type=offline";
+        oauth_url += "&prompt=consent";
+
+        // Redirect to Google OAuth
+        mg_printf(c, "HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: 0\r\n\r\n", oauth_url.c_str());
+        return 0;
+    }
+
+    // Check for 'code' parameter in query
+    char auth_code[1024] = "";
+    if (mg_http_get_var(&hm->query, "code", auth_code, sizeof(auth_code)) > 0)
+    {
+        Debug_printf("Google OAuth callback received code: %s\n", auth_code);
+
+        // Store the auth code globally so GoogleDrive filesystem can use it
+        g_google_oauth_code = std::string(auth_code);
+
+        // Redirect to main page
+        mg_printf(c, "HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\n\r\n");
+        return 0;
+    }
+
+    // Check for 'error' parameter in query
+    char error[256] = "";
+    if (mg_http_get_var(&hm->query, "error", error, sizeof(error)) > 0)
+    {
+        Debug_printf("Google OAuth error: %s\n", error);
+
+        std::string response = "<!DOCTYPE html><html><head><title>Google Drive Authorization Error</title></head>";
+        response += "<body><h1>Authorization Error</h1>";
+        response += "<p>Error: " + std::string(error) + "</p>";
+        response += "<p><a href='/oauth/google'>Try again</a></p>";
+        response += "</body></html>";
+
+        mg_http_reply(c, 200, "Content-Type: text/html\r\n", "%s", response.c_str());
+        return 0;
+    }
+
+    // Fallback - redirect to start OAuth flow
+    mg_printf(c, "HTTP/1.1 302 Found\r\nLocation: /oauth/google\r\nContent-Length: 0\r\n\r\n");
+    return 0;
+}
+
 void fnHttpService::cb(struct mg_connection *c, int ev, void *ev_data)
 {
     static const char *s_root_dir = "data/www";
@@ -643,6 +712,10 @@ void fnHttpService::cb(struct mg_connection *c, int ev, void *ev_data)
         else if (mg_http_match_uri(hm, "/url/*"))
         {
             get_handler_shorturl(c, hm);
+        }
+        else if (mg_http_match_uri(hm, "/oauth/google"))
+        {
+            get_handler_oauth_google(c, hm);
         }
         else
         // default handler, serve static content of www firectory

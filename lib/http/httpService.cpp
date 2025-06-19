@@ -23,11 +23,15 @@
 #include "httpServiceConfigurator.h"
 #include "httpServiceParser.h"
 #include "fuji.h"
+#include "../../include/secrets.h"
 
 using namespace std;
 
 // Global HTTPD
 fnHttpService fnHTTPD;
+
+// Global variable to store Google OAuth code
+std::string g_google_oauth_code;
 
 /**
  * URL encoding/decoding helper functions
@@ -1300,7 +1304,95 @@ esp_err_t fnHttpService::post_handler_config(httpd_req_t *req)
     return ESP_OK;
 }
 
+esp_err_t fnHttpService::get_handler_oauth_google(httpd_req_t *req)
+{
+#ifdef VERBOSE_HTTP
+    Debug_printf("Google OAuth handler '%s'\n", req->uri);
+#endif
 
+    queryparts qp;
+    parse_query(req, &qp);
+
+    // If no query parameters, redirect to Google OAuth
+    if (qp.query.empty())
+    {
+        // Construct Google OAuth URL
+        std::string client_id = GOOGLE_DRIVE_CLIENT_ID;
+        std::string redirect_uri = "http://";
+        redirect_uri += fnSystem.Net.get_ip4_address_str();
+        redirect_uri += "/oauth/google";
+        
+#ifdef ESP_PLATFORM
+        char *encoded_redirect_uri = url_encode(const_cast<char*>(redirect_uri.c_str()));
+        char *encoded_client_id = url_encode(const_cast<char*>(client_id.c_str()));
+#else
+        char encoded_redirect_uri[1024];
+        char encoded_client_id[1024];
+        mg_url_encode(redirect_uri.c_str(), redirect_uri.length(), encoded_redirect_uri, sizeof(encoded_redirect_uri));
+        mg_url_encode(client_id.c_str(), client_id.length(), encoded_client_id, sizeof(encoded_client_id));
+#endif
+
+        std::string oauth_url = "https://accounts.google.com/o/oauth2/v2/auth?";
+        oauth_url += "client_id=" + std::string(encoded_client_id);
+        oauth_url += "&redirect_uri=" + std::string(encoded_redirect_uri);
+        oauth_url += "&response_type=code";
+        oauth_url += "&scope=https://www.googleapis.com/auth/drive";
+        oauth_url += "&access_type=offline";
+        oauth_url += "&prompt=consent";
+
+#ifdef ESP_PLATFORM
+        free(encoded_redirect_uri);
+        free(encoded_client_id);
+#endif
+
+        // Redirect to Google OAuth
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", oauth_url.c_str());
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    // If we have a 'code' parameter, handle the OAuth callback
+    if (qp.query_parsed.find("code") != qp.query_parsed.end())
+    {
+        std::string auth_code = qp.query_parsed["code"];
+        Debug_printf("Google OAuth callback received code: %s\n", auth_code.c_str());
+
+        // Store the auth code globally so GoogleDrive filesystem can use it
+        // This is a simple approach - in production you might want a more sophisticated token management
+        extern std::string g_google_oauth_code;
+        g_google_oauth_code = auth_code;
+
+        // Redirect to main page
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    // If we have an 'error' parameter, handle the error
+    if (qp.query_parsed.find("error") != qp.query_parsed.end())
+    {
+        std::string error = qp.query_parsed["error"];
+        Debug_printf("Google OAuth error: %s\n", error.c_str());
+
+        std::string response = "<!DOCTYPE html><html><head><title>Google Drive Authorization Error</title></head>";
+        response += "<body><h1>Authorization Error</h1>";
+        response += "<p>Error: " + error + "</p>";
+        response += "<p><a href='/oauth/google'>Try again</a></p>";
+        response += "</body></html>";
+
+        httpd_resp_set_type(req, "text/html");
+        httpd_resp_send(req, response.c_str(), response.length());
+        return ESP_OK;
+    }
+
+    // Fallback - redirect to start OAuth flow
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/oauth/google");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
 
 esp_err_t fnHttpService::webdav_handler(httpd_req_t *httpd_req)
 {
@@ -1541,6 +1633,13 @@ httpd_handle_t fnHttpService::start_server(serverstate &state)
         {.uri = "/config",
          .method = HTTP_POST,
          .handler = post_handler_config,
+         .user_ctx = NULL,
+         .is_websocket = false,
+         .handle_ws_control_frames = false,
+         .supported_subprotocol = nullptr},
+        {.uri = "/oauth/google",
+         .method = HTTP_GET,
+         .handler = get_handler_oauth_google,
          .user_ctx = NULL,
          .is_websocket = false,
          .handle_ws_control_frames = false,

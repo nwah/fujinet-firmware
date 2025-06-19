@@ -15,5 +15,6 @@ components:
   program_recorder: true
   disk_swap: true
   boot_settings: true
+  oauth_connections: true
 tweaks:
   # webui tweaks, if any

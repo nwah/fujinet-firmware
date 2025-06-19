@@ -63,14 +63,21 @@ private:
     bool upload_file(const char* local_path, const std::string& parent_folder_id, const std::string& filename);
     bool delete_file(const std::string& file_id);
     bool create_folder(const std::string& name, const std::string& parent_folder_id);
-    std::string url_encode(const std::string& value);
+
     std::string build_file_list_query(const std::string& folder_id);
+    
+    // OAuth token management
+    bool set_oauth_tokens(const std::string& access_token, const std::string& refresh_token);
+    bool has_valid_tokens() const;
+    bool initialize_from_oauth_code(const std::string& oauth_code);
+    std::string get_access_token() const { return _access_token; }
+    std::string get_refresh_token() const { return _refresh_token; }
 
 public:
     FileSystemGoogleDrive();
     ~FileSystemGoogleDrive();
 
-    bool start(const char* client_id, const char* client_secret, const char* access_code);
+    bool start();
 
     fsType type() override { return FSTYPE_GOOGLEDRIVE; };
     const char *typestring() override { return type_to_string(FSTYPE_GOOGLEDRIVE); };
