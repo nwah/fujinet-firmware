@@ -169,7 +169,7 @@ void systemBus::_rs232_process_cmd()
     {
         _modemDev->modemActive = false;
         Debug_println("Modem was active - resetting RS232 baud");
-        _port.setBaudrate(_rs232Baud);
+        _port->setBaudrate(_rs232Baud);
     }
 
     // Read CMD frame
@@ -275,13 +275,13 @@ void systemBus::service()
 
 #if 0 && !defined(FUJINET_OVER_USB)
     // Go process a command frame if the RS232 CMD line is asserted
-    if (_port.dsrState())
+    if (_port->dsrState())
     {
         _rs232_process_cmd();
     }
 #else /* FUJINET_OVER_USB */
     // Go process a command frame if the RS232 CMD line is asserted
-    if (_port.available())
+    if (_port->available())
     {
         _rs232_process_cmd();
     }
@@ -295,7 +295,7 @@ void systemBus::service()
     // Neither CMD nor active modem, so throw out any stray input data
     {
         //Debug_println("RS232 Srvc Flush");
-        _port.discardInput();
+        _port->discardInput();
     }
 
     // Handle interrupts from network protocols
@@ -313,11 +313,21 @@ void systemBus::setup()
 
     // Set up UART
 #ifndef FUJINET_OVER_USB
-    _port.begin(ChannelConfig()
-                .baud(Config.get_rs232_baud())
-                .readTimeout(5000)
-                .deviceID(SERIAL_DEVICE))
-        ;
+    if (Config.get_boip_enabled())
+    {
+        Debug_printf("RS232 SETUP: BOIP host: %s\n", Config.get_boip_host().c_str());
+        _becker.begin(Config.get_boip_host(), Config.get_rs232_baud());
+        _port = &_becker;
+    }
+    else
+    {
+        _serial.begin(ChannelConfig()
+                    .baud(Config.get_rs232_baud())
+                    .readTimeout(5000)
+                    .deviceID(SERIAL_DEVICE))
+            ;
+        _port = &_serial;
+    }
 
 #ifdef ESP_PLATFORM
     // // INT PIN
@@ -343,11 +353,12 @@ void systemBus::setup()
     fnSystem.digital_write(PIN_RS232_DSR,DIGI_LOW);
 #endif /* ESP_PLATFORM */
 #else /* FUJINET_OVER_USB */
-    _port.begin();
+    _serial.begin();
+    _port = &_serial;
 #endif /* FUJINET_OVER_USB */
 
     Debug_println("RS232 Setup Flush");
-    _port.discardInput();
+    _port->discardInput();
 }
 
 // Add device to RS232 bus
@@ -442,7 +453,7 @@ void systemBus::toggleBaudrate()
 
     // Debug_printf("Toggling baudrate from %d to %d\n", _rs232Baud, baudrate);
     _rs232Baud = baudrate;
-    _port.setBaudrate(_rs232Baud);
+    _port->setBaudrate(_rs232Baud);
 }
 
 int systemBus::getBaudrate()
@@ -460,7 +471,7 @@ void systemBus::setBaudrate(int baud)
 
     Debug_printf("Changing baudrate from %d to %d\n", _rs232Baud, baud);
     _rs232Baud = baud;
-    _port.setBaudrate(baud);
+    _port->setBaudrate(baud);
 }
 
 // Set HRS232 index. Sets high speed RS232 baud and also returns that value.

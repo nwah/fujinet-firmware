@@ -2,8 +2,10 @@
 #define RS232_H
 
 #include "ACMChannel.h"
+#include "IOChannel.h"
 #include "UARTChannel.h"
 #include "TTYChannel.h"
+#include "../drivewire/BeckerSocket.h"
 
 #ifdef ESP_PLATFORM
 #include <freertos/FreeRTOS.h>
@@ -150,7 +152,7 @@ protected:
     virtual void rs232_status() = 0;
 
     /**
-     * @brief All RS232 devices repeatedly call this routine to fan out to other methods for each command. 
+     * @brief All RS232 devices repeatedly call this routine to fan out to other methods for each command.
      * This is typcially implemented as a switch() statement.
      */
     virtual void rs232_process(cmdFrame_t *cmd_ptr) = 0;
@@ -229,14 +231,16 @@ private:
 
     bool useUltraHigh = false; // Use fujinet derived clock.
 
+    IOChannel *_port;
 #if FUJINET_OVER_USB
-    ACMChannel _port;
+    ACMChannel _serial;
 #elif defined(ITS_A_UNIX_SYSTEM_I_KNOW_THIS)
-    TTYChannel _port;
+    TTYChannel _serial;
 #else /* !FUJINET_OVER_USB */
-    UARTChannel _port;
+    UARTChannel _serial;
 #endif /* FUJINET_OVER_USB */
-    
+    BeckerSocket _becker;
+
     void _rs232_process_cmd();
     /* void _rs232_process_queue(); */
 
