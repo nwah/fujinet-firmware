@@ -327,7 +327,9 @@ void systemBus::setup()
     }
 
 #else /* FUJINET_OVER_USB */
-    _serial.begin();
+    _serial.begin(ChannelConfig()
+                .baud(Config.get_rs232_baud())
+                .readTimeout(200));
     _port = &_serial;
 #endif /* FUJINET_OVER_USB */
 

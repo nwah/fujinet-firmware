@@ -8,8 +8,8 @@
 
 #define USB_HOST_PRIORITY   (20)
 // FIXME - don't hard code, use whatever CDC-ADM device is connected
-#define USB_DEVICE_VID (0xf022)
-#define USB_DEVICE_PID (0x4001)
+#define USB_DEVICE_VID (0x2e8a)
+#define USB_DEVICE_PID (0x000a)
 
 #define TX_STRING           ("CDC test string!")
 #define TX_TIMEOUT_MS       (1000)
@@ -17,7 +17,7 @@
 #include <inttypes.h> // debug
 #include <esp_log.h>
 
-#define DEBUG_TAG "SerialACM"
+#define DEBUG_TAG "ACMChannel"
 
 #define MAX_FIFO_PAYLOAD 32
 typedef struct {
@@ -43,13 +43,13 @@ static void usb_lib_task(void *arg)
 
 static bool rxForwarder(const uint8_t *data, size_t length, void *arg)
 {
-    SerialACM *instance = (SerialACM *) arg;
+    ACMChannel *instance = (ACMChannel *) arg;
 
     instance->dataReceived(data, length);
     return true;
 }
 
-void SerialACM::dataReceived(const uint8_t *data, size_t length)
+void ACMChannel::dataReceived(const uint8_t *data, size_t length)
 {
     size_t offset;
     FIFOPacket pkt;
@@ -69,12 +69,12 @@ void SerialACM::dataReceived(const uint8_t *data, size_t length)
 
 static void eventForwarder(const cdc_acm_host_dev_event_data_t *event, void *user_ctx)
 {
-    SerialACM *instance = (SerialACM *) user_ctx;
+    ACMChannel *instance = (ACMChannel *) user_ctx;
     instance->eventReceived(event);
     return;
 }
 
-void SerialACM::eventReceived(const cdc_acm_host_dev_event_data_t *event)
+void ACMChannel::eventReceived(const cdc_acm_host_dev_event_data_t *event)
 {
     switch (event->type) {
     case CDC_ACM_HOST_ERROR:
@@ -95,7 +95,7 @@ void SerialACM::eventReceived(const cdc_acm_host_dev_event_data_t *event)
     }
 }
 
-void SerialACM::begin()
+void ACMChannel::begin(const ChannelConfig& conf)
 {
     rxQueue = xQueueCreate(1024 / MAX_FIFO_PAYLOAD, sizeof(FIFOPacket));
 
@@ -196,11 +196,11 @@ void SerialACM::begin()
     return;
 }
 
-void SerialACM::end()
+void ACMChannel::end()
 {
 }
 
-void SerialACM::update_fifo()
+void ACMChannel::updateFIFO()
 {
     FIFOPacket pkt;
     size_t old_len;
@@ -208,16 +208,16 @@ void SerialACM::update_fifo()
     while (xQueueReceive(rxQueue, &pkt, 0))
     {
         Debug_printv("packet %i", pkt.length);
-        old_len = fifo.size();
-        fifo.resize(old_len + pkt.length);
-        memcpy(&fifo[old_len], pkt.data, pkt.length);
-        Debug_printv("fifo %i", fifo.size());
+        old_len = _fifo.size();
+        _fifo.resize(old_len + pkt.length);
+        memcpy(&_fifo[old_len], pkt.data, pkt.length);
+        Debug_printv("fifo %i", _fifo.size());
     }
 
     return;
 }
 
-size_t SerialACM::si_send(const void *buffer, size_t length)
+size_t ACMChannel::dataOut(const void *buffer, size_t length)
 {
     cdc_acm_host_data_tx_blocking(cdc_dev,
                                   (const uint8_t *) buffer,
@@ -226,8 +226,68 @@ size_t SerialACM::si_send(const void *buffer, size_t length)
     return length;
 }
 
-void SerialACM::flush()
+void ACMChannel::flushOutput()
 {
+    return;
+}
+
+bool ACMChannel::getPin(int /*pin*/)
+{
+    // if (pin < 0)
+    //     return 0;
+    // return fnSystem.digital_read(pin) == DIGI_LOW;
+
+    return false;
+}
+
+void ACMChannel::setPin(int /*pin*/, bool /*state*/)
+{
+    // if (pin >= 0)
+    //     fnSystem.digital_write(pin, !state);
+    // return;
+
+    return;
+}
+
+bool ACMChannel::getDTR()
+{
+    // return getPin(controlPins.dtr);
+
+    return false;
+}
+
+void ACMChannel::setDSR(bool state)
+{
+    // setPin(controlPins.dsr, state);
+
+    return;
+}
+
+bool ACMChannel::getRTS()
+{
+    // return getPin(controlPins.rts);
+
+    return false;
+}
+
+void ACMChannel::setCTS(bool state)
+{
+    // setPin(controlPins.cts, state);
+
+    return;
+}
+
+void ACMChannel::setDCD(bool state)
+{
+    // setPin(controlPins.dcd, state);
+
+    return;
+}
+
+void ACMChannel::setRI(bool state)
+{
+    // setPin(controlPins.ri, state);
+
     return;
 }
 

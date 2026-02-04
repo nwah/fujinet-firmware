@@ -2,6 +2,7 @@
 #define UARTCHANNEL_H
 
 #include "ESP32UARTChannel.h"
+#include "ACMChannel.h"
 #include "TTYChannel.h"
 #include "COMChannel.h"
 
@@ -10,7 +11,7 @@ using UARTChannel = TTYChannel;
 #elif defined(HELLO_IM_A_PC)
 using UARTChannel = COMChannel;
 #elif defined(ESP_PLATFORM)
-using UARTChannel = ESP32UARTChannel;
+using UARTChannel = ACMChannel;
 #else
 #error "Unknown serial hardware"
 #endif
