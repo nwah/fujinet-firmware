@@ -250,7 +250,7 @@ mediatype_t rs232Disk::mountROM(fnFile *f, const char *filename, uint32_t disksi
             break;
         }
 
-        usleep(30000);
+        // usleep(30000);
     }
 
     // "closing" RAM will make the bank active
