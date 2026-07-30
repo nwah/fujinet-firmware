@@ -254,6 +254,10 @@ fujiError_t rs232Network::rs232_read_channel(uint16_t num_bytes)
     case CHANNEL_MODE::SGML:
         err = rs232_read_channel_sgml(num_bytes);
         break;
+    case CHANNEL_MODE::PRETTY:
+        Debug_printf("PRETTY Not Handled.\n");
+        err = FUJI_ERROR::UNSPECIFIED;
+        break;
     }
     return err;
 }
@@ -325,7 +329,8 @@ fujiError_t rs232Network::rs232_write_channel(uint16_t num_bytes)
         err = FUJI_ERROR::UNSPECIFIED;
         break;
     case CHANNEL_MODE::SGML:
-        Debug_printf("SGML Not Handled.\n");
+    case CHANNEL_MODE::PRETTY:
+        Debug_printf("SGML/PRETTY Not Handled.\n");
         err = FUJI_ERROR::UNSPECIFIED;
         break;
     }
@@ -434,6 +439,9 @@ void rs232Network::rs232_status_channel()
     case CHANNEL_MODE::SGML:
         rs232_status_channel_sgml(&status);
         avail = sgml_bytes_remaining;
+        break;
+    case CHANNEL_MODE::PRETTY:
+        Debug_printf("PRETTY Not Handled.\n");
         break;
     }
 

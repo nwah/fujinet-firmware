@@ -32,3 +32,28 @@ add_test(
             ${CMAKE_SOURCE_DIR}/lib/device/fujiDevice
             ${CMAKE_SOURCE_DIR}/lib/device/fujiClock
 )
+
+file(GLOB GUMBO_TEST_SOURCES ${CMAKE_SOURCE_DIR}/components/gumbo/*.c)
+set_source_files_properties(${GUMBO_TEST_SOURCES} PROPERTIES COMPILE_OPTIONS -w) # vendored third-party
+
+add_executable(fnpretty_tests
+    FnPrettyRenderTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/fnpretty/fnpretty.cpp
+    ${GUMBO_TEST_SOURCES}
+)
+
+# fnpretty.cpp reaches NetworkProtocol, which pulls in the bus headers for the
+# configured target, so reuse the firmware's include path (relative entries are
+# anchored to the source root here) rather than tracking that chain by hand.
+set(FNPRETTY_TEST_INCLUDES "")
+foreach(dir ${INCLUDE_DIRS})
+    list(APPEND FNPRETTY_TEST_INCLUDES ${CMAKE_SOURCE_DIR}/${dir})
+endforeach()
+
+target_include_directories(fnpretty_tests PRIVATE
+    ${FNPRETTY_TEST_INCLUDES}
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+add_test(NAME fnpretty_tests COMMAND fnpretty_tests)

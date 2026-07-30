@@ -17,6 +17,7 @@
 #include "status_error_codes.h"
 #include "fnjson.h"
 #include "fnsgml.h"
+#include "fnpretty.h"
 
 /**
  * Number of devices to expose via SIO, becomes 0x71 to 0x70 + NUM_DEVICES - 1
@@ -251,12 +252,14 @@ private:
      * @enum PROTOCOL Send to protocol
      * @enum JSON Send to JSON parser.
      * @enum SGML Send to SGML/HTML/XML parser.
+     * @enum PRETTY Send to the pretty renderer (document as formatted plain text).
      */
     enum _channel_mode
     {
         PROTOCOL,
         JSON,
-        SGML
+        SGML,
+        PRETTY
     } channelMode;
 
     /**
@@ -285,6 +288,11 @@ private:
      * Bytes remaining of current SGML query result.
      */
     unsigned short sgml_bytes_remaining = 0;
+
+    /**
+     * The pretty renderer object (document rendered to plain text)
+     */
+    FNPretty *pretty = nullptr;
 
     /**
      * @brief the write buffer
@@ -356,6 +364,12 @@ private:
     fujiError_t sio_read_channel_sgml(unsigned short num_bytes);
 
     /**
+     * @brief Perform read of the current PRETTY channel
+     * @param num_bytes Number of bytes to read
+     */
+    fujiError_t sio_read_channel_pretty(unsigned short num_bytes);
+
+    /**
      * Perform the correct write based on value of channelMode
      * @param num_bytes Number of bytes to write.
      * @return FUJI_ERROR::UNSPECIFIED on error, FUJI_ERROR::NONE on success. Used to emit sio_error or sio_complete().
@@ -382,6 +396,11 @@ private:
      * @brief get SGML status (# of bytes in receive channel)
      */
     error_is_true sio_status_channel_sgml(NetworkStatus *ns);
+
+    /**
+     * @brief get PRETTY status (# of bytes of rendered text left to read)
+     */
+    error_is_true sio_status_channel_pretty(NetworkStatus *ns);
 
     /**
      * Called to pulse the PROCEED interrupt, rate limited by the interrupt timer.
@@ -430,6 +449,17 @@ private:
      * @brief Set SGML CSS selector query string. (must be in SGML channelMode)
      */
     void sio_set_sgml_query(const FujiSIOPacket &packet);
+
+    /**
+     * @brief Fetch and render a document to plain text. (must be in PRETTY channelMode)
+     */
+    void sio_parse_pretty();
+
+    /**
+     * @brief Bytes of rendered text still to be handed to the computer,
+     * counting what's already staged in receiveBuffer.
+     */
+    size_t pretty_bytes_remaining();
 
     /**
      * @brief Set timer rate for PROCEED timer in ms

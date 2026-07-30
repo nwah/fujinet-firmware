@@ -117,6 +117,11 @@ void sioNetwork::sio_open(const FujiSIOPacket &packet)
         sgml = nullptr;
     }
 
+    if (pretty != nullptr) {
+        delete pretty;
+        pretty = nullptr;
+    }
+
     if (urlParser != nullptr) {
         urlParser = nullptr;
     }
@@ -172,6 +177,10 @@ void sioNetwork::sio_open(const FujiSIOPacket &packet)
     sgml->setProtocol(protocol.get());
     sgml_bytes_remaining = 0; // reset per-open so a prior session's count doesn't leak
 
+    pretty = new FNPretty();
+    pretty->setLineEnding("\x9b");
+    pretty->setProtocol(protocol.get());
+
     channelMode = PROTOCOL;
 
     // And signal complete!
@@ -219,6 +228,12 @@ void sioNetwork::sio_close()
     {
         delete sgml;
         sgml = nullptr;
+    }
+
+    if (pretty != nullptr)
+    {
+        delete pretty;
+        pretty = nullptr;
     }
 
 #ifdef ESP_PLATFORM
@@ -299,6 +314,39 @@ fujiError_t sioNetwork::sio_read_channel_sgml(unsigned short num_bytes)
 }
 
 /**
+ * @brief Perform read of the current PRETTY channel
+ *
+ * The renderer holds the whole rendered page, so top receiveBuffer up from it
+ * on demand rather than staging the entire document at parse time. Short reads
+ * are padded with nulls, since sio_read() always sends num_bytes back.
+ *
+ * @param num_bytes Number of bytes to read
+ */
+fujiError_t sioNetwork::sio_read_channel_pretty(unsigned short num_bytes)
+{
+    if (pretty == nullptr)
+        return FUJI_ERROR::UNSPECIFIED;
+
+    if (receiveBuffer->size() < num_bytes && pretty->available() > 0)
+    {
+        size_t want = num_bytes - receiveBuffer->size();
+        std::vector<uint8_t> tmp(want);
+        size_t got = pretty->readValue(tmp.data(), want);
+        receiveBuffer->append((const char *)tmp.data(), got);
+    }
+
+    if (receiveBuffer->size() < num_bytes)
+    {
+        bool at_eof = receiveBuffer->empty();
+        receiveBuffer->append(num_bytes - receiveBuffer->size(), '\0');
+        // Nothing at all left to give: tell the computer this read failed.
+        return at_eof ? FUJI_ERROR::UNSPECIFIED : FUJI_ERROR::NONE;
+    }
+
+    return FUJI_ERROR::NONE;
+}
+
+/**
  * Perform the channel read based on the channelMode
  * @param num_bytes - number of bytes to read from channel.
  * @return FUJI_ERROR::UNSPECIFIED on error, FUJI_ERROR::NONE on success. Passed directly to SYSTEM_BUS.transaction_send().
@@ -317,6 +365,9 @@ fujiError_t sioNetwork::sio_read_channel(unsigned short num_bytes)
         break;
     case SGML:
         err = sio_read_channel_sgml(num_bytes);
+        break;
+    case PRETTY:
+        err = sio_read_channel_pretty(num_bytes);
         break;
     }
     return err;
@@ -386,6 +437,10 @@ fujiError_t sioNetwork::sio_write_channel(unsigned short num_bytes)
         break;
     case SGML:
         Debug_printf("SGML Not Handled.\n");
+        err = FUJI_ERROR::UNSPECIFIED;
+        break;
+    case PRETTY:
+        Debug_printf("PRETTY Not Handled.\n");
         err = FUJI_ERROR::UNSPECIFIED;
         break;
     }
@@ -475,6 +530,24 @@ error_is_true sioNetwork::sio_status_channel_sgml(NetworkStatus *ns)
 }
 
 /**
+ * Rendered bytes still owed to the computer: what the renderer hasn't handed
+ * over yet, plus what a previous read already staged in receiveBuffer.
+ */
+size_t sioNetwork::pretty_bytes_remaining()
+{
+    return (pretty == nullptr ? 0 : pretty->available()) + receiveBuffer->size();
+}
+
+error_is_true sioNetwork::sio_status_channel_pretty(NetworkStatus *ns)
+{
+    size_t remaining = pretty_bytes_remaining();
+
+    ns->connected = remaining > 0;
+    ns->error = remaining > 0 ? NDEV_STATUS::SUCCESS : NDEV_STATUS::END_OF_FILE;
+    RETURN_SUCCESS_AS_FALSE(); // for now
+}
+
+/**
  * @brief perform channel status commands, if there is a protocol bound.
  */
 void sioNetwork::sio_status_channel()
@@ -511,6 +584,10 @@ void sioNetwork::sio_status_channel()
     case SGML:
         sio_status_channel_sgml(&status);
         avail = sgml_bytes_remaining;
+        break;
+    case PRETTY:
+        sio_status_channel_pretty(&status);
+        avail = pretty_bytes_remaining();
         break;
     }
     // clear forced flag (first status after open)
@@ -651,6 +728,14 @@ void sioNetwork::sio_set_channel_mode(const FujiSIOPacket &packet)
         break;
     case 2:
         channelMode = SGML;
+        SYSTEM_BUS.transaction_success();
+        break;
+    case 3:
+        // aux1 carries the computer's screen width in columns (32/40/80); 0
+        // keeps whatever width was set before (default 40).
+        channelMode = PRETTY;
+        if (pretty != nullptr)
+            pretty->setScreenWidth(packet.param8(0));
         SYSTEM_BUS.transaction_success();
         break;
     default:
@@ -806,6 +891,8 @@ void sioNetwork::sio_process(const FujiSIOPacket &packet)
     case NETCMD_PARSE:
         if (channelMode == SGML)
             sio_parse_sgml();
+        else if (channelMode == PRETTY)
+            sio_parse_pretty();
         else
             sio_parse_json();
         break;
@@ -1295,6 +1382,37 @@ void sioNetwork::sio_set_sgml_query(const FujiSIOPacket &packet)
 
     Debug_printf("SGML query set to >%s< (buf_size=%d, sgml_remaining=%d)\r\n",
                  inp_string.c_str(), (int)receiveBuffer->size(), sgml_bytes_remaining);
+    SYSTEM_BUS.transaction_success();
+}
+
+/**
+ * Fetch the page and render it to plain text. Afterwards STATUS reports the
+ * rendered size and READ drains it, so no query step is needed.
+ */
+void sioNetwork::sio_parse_pretty()
+{
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+
+    if (pretty == nullptr)
+    {
+        status.error = NDEV_STATUS::NOT_CONNECTED;
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    // A re-render replaces the previous page, so drop anything staged from it.
+    receiveBuffer->clear();
+
+    if (!pretty->parse())
+    {
+        Debug_printf("sioNetwork::sio_parse_pretty() - nothing to render\r\n");
+        status.error = NDEV_STATUS::END_OF_FILE;
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    Debug_printf("sioNetwork::sio_parse_pretty() - %u bytes at %u columns\r\n",
+                 (unsigned)pretty->available(), pretty->screenWidth());
     SYSTEM_BUS.transaction_success();
 }
 

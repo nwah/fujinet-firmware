@@ -389,6 +389,9 @@ void iwmNetwork::status()
         current_network_data.sgml->status(&s);
         avail = current_network_data.sgml->available();
         break;
+    case CHANNEL_MODE::PRETTY:
+        Debug_printf("PRETTY Not Handled.\n");
+        break;
     }
 
     Debug_printf("Bytes Waiting: 0x%02x, Connected: %u, Error: %u\n", avail, s.connected, s.error);
@@ -509,6 +512,7 @@ error_is_true iwmNetwork::write_channel(unsigned short num_bytes)
         current_network_data.protocol->write(num_bytes);
     case CHANNEL_MODE::JSON:
     case CHANNEL_MODE::SGML:
+    case CHANNEL_MODE::PRETTY:
         break;
     }
     RETURN_SUCCESS_AS_FALSE();
@@ -539,6 +543,9 @@ void iwmNetwork::iwm_read(const iwm_decoded_cmd_t &cmd)
         break;
     case CHANNEL_MODE::SGML:
         read_channel_sgml(cmd);
+        break;
+    case CHANNEL_MODE::PRETTY:
+        Debug_printf("PRETTY Not Handled.\n");
         break;
     }
 }
