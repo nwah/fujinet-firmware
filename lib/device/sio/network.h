@@ -256,10 +256,11 @@ private:
      */
     enum _channel_mode
     {
-        PROTOCOL,
-        JSON,
-        SGML,
-        PRETTY
+        PROTOCOL = 0,
+        JSON     = 1,
+        SGML     = 2,
+        // 3 is reserved for the XML/XPath channel; do not reuse it.
+        PRETTY   = 4
     } channelMode;
 
     /**
@@ -293,6 +294,14 @@ private:
      * The pretty renderer object (document rendered to plain text)
      */
     FNPretty *pretty = nullptr;
+
+    /**
+     * True while receiveBuffer holds a link URL staged by a numeric PRETTY query
+     * rather than rendered page text. STATUS/READ serve the URL to the exclusion
+     * of the document while it is set, so looking a link up does not disturb the
+     * client's position in the page.
+     */
+    bool pretty_link_pending = false;
 
     /**
      * @brief the write buffer
@@ -454,6 +463,17 @@ private:
      * @brief Fetch and render a document to plain text. (must be in PRETTY channelMode)
      */
     void sio_parse_pretty();
+
+    /**
+     * @brief Set PRETTY renderer parameters. (must be in PRETTY channelMode)
+     */
+    void sio_set_pretty_parameters(const FujiSIOPacket &packet);
+
+    /**
+     * @brief Set PRETTY CSS selector query string, or (an all-digits payload)
+     * look up a collected link's URL by 1-based index. (must be in PRETTY channelMode)
+     */
+    void sio_set_pretty_query(const FujiSIOPacket &packet);
 
     /**
      * @brief Bytes of rendered text still to be handed to the computer,

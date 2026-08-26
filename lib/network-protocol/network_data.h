@@ -19,7 +19,8 @@ typedef enum class CHANNEL_MODE {
     PROTOCOL = 0,
     JSON     = 1,
     SGML     = 2,
-    PRETTY   = 3,
+    // 3 is reserved for the XML/XPath channel; do not reuse it.
+    PRETTY   = 4,
 } channelMode_t;
 
 struct NetworkData {

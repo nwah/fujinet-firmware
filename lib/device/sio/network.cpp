@@ -11,6 +11,8 @@
 #include "utils.h"
 #include "debug.h"
 
+#include <cerrno>
+#include <cstdlib>
 #include <sstream>
 
 using namespace std;
@@ -180,6 +182,10 @@ void sioNetwork::sio_open(const FujiSIOPacket &packet)
     pretty = new FNPretty();
     pretty->setLineEnding("\x9b");
     pretty->setProtocol(protocol.get());
+    // The renderer resolves relative hrefs against the page URL when link
+    // collection is on.
+    pretty->setBaseUrl(urlParser->mRawUrl);
+    pretty_link_pending = false; // reset per-open so a prior session's flag doesn't leak
 
     channelMode = PROTOCOL;
 
@@ -320,6 +326,10 @@ fujiError_t sioNetwork::sio_read_channel_sgml(unsigned short num_bytes)
  * on demand rather than staging the entire document at parse time. Short reads
  * are padded with nulls, since sio_read() always sends num_bytes back.
  *
+ * While a link URL is staged (pretty_link_pending), receiveBuffer holds only
+ * that URL: it is served as-is, never topped up from the renderer, and the
+ * flag clears once this read drains it, so the page resumes on the next read.
+ *
  * @param num_bytes Number of bytes to read
  */
 fujiError_t sioNetwork::sio_read_channel_pretty(unsigned short num_bytes)
@@ -327,7 +337,13 @@ fujiError_t sioNetwork::sio_read_channel_pretty(unsigned short num_bytes)
     if (pretty == nullptr)
         return FUJI_ERROR::UNSPECIFIED;
 
-    if (receiveBuffer->size() < num_bytes && pretty->available() > 0)
+    if (pretty_link_pending)
+    {
+        // Serving a staged link URL: never mix rendered page text into it.
+        if (receiveBuffer->size() <= num_bytes)
+            pretty_link_pending = false; // this read drains it; the page resumes after
+    }
+    else if (receiveBuffer->size() < num_bytes && pretty->available() > 0)
     {
         size_t want = num_bytes - receiveBuffer->size();
         std::vector<uint8_t> tmp(want);
@@ -532,9 +548,15 @@ error_is_true sioNetwork::sio_status_channel_sgml(NetworkStatus *ns)
 /**
  * Rendered bytes still owed to the computer: what the renderer hasn't handed
  * over yet, plus what a previous read already staged in receiveBuffer.
+ *
+ * A staged link URL is served to the exclusion of the page, so while one is
+ * pending it alone is what the computer is owed.
  */
 size_t sioNetwork::pretty_bytes_remaining()
 {
+    if (pretty_link_pending)
+        return receiveBuffer->size();
+
     return (pretty == nullptr ? 0 : pretty->available()) + receiveBuffer->size();
 }
 
@@ -730,9 +752,12 @@ void sioNetwork::sio_set_channel_mode(const FujiSIOPacket &packet)
         channelMode = SGML;
         SYSTEM_BUS.transaction_success();
         break;
-    case 3:
-        // aux1 carries the computer's screen width in columns (32/40/80); 0
-        // keeps whatever width was set before (default 40).
+    case 4:
+        // aux2 selected the mode (this switch), so aux1 is the only free byte
+        // here: it carries the computer's screen width in columns (32/40/80),
+        // and 0 keeps whatever width was set before (default 40). Link
+        // rendering is off by default and is turned on separately, via
+        // NETCMD_SET_PARAMETERS aux1=0.
         channelMode = PRETTY;
         if (pretty != nullptr)
             pretty->setScreenWidth(packet.param8(0));
@@ -905,8 +930,11 @@ void sioNetwork::sio_process(const FujiSIOPacket &packet)
     case NETCMD_SET_INT_RATE:
         sio_set_timer_rate(packet);
         break;
-    case NETCMD_SET_PARAMETERS: // JSON parameter wrangling
-        sio_set_json_parameters(packet);
+    case NETCMD_SET_PARAMETERS: // JSON/PRETTY parameter wrangling
+        if (channelMode == PRETTY)
+            sio_set_pretty_parameters(packet);
+        else
+            sio_set_json_parameters(packet);
         break;
     case NETCMD_CHANNEL_MODE:
         sio_set_channel_mode(packet);
@@ -922,9 +950,12 @@ void sioNetwork::sio_process(const FujiSIOPacket &packet)
     case NETCMD_QUERY:
         if (channelMode == SGML)
             sio_set_sgml_query(packet);
+        else if (channelMode == PRETTY)
+            sio_set_pretty_query(packet);
         else
             sio_set_json_query(packet);
         return;
+
     case NETCMD_USERNAME:
         sio_set_login();
         return;
@@ -1386,8 +1417,116 @@ void sioNetwork::sio_set_sgml_query(const FujiSIOPacket &packet)
 }
 
 /**
+ * Set the PRETTY channel's query string. This does double duty:
+ *
+ * - A CSS selector names the section of the page the renderer shows. Unlike
+ *   the SGML query, this stages nothing into receiveBuffer and returns no
+ *   value: the client reads the re-rendered section back through the normal
+ *   STATUS/READ loop, and an empty selector restores the whole document.
+ *   The query re-lays-out the retained parse tree, so no re-fetch happens.
+ *
+ * - A query string made up of nothing but decimal digits is instead a
+ *   1-based index into the links collected while rendering, and the
+ *   resolved URL is staged into receiveBuffer for the following STATUS/READ
+ *   in place of page text. This is unambiguous: a CSS identifier can never
+ *   begin with a digit, so an all-digits query string can never be a valid
+ *   selector, and the two forms can never collide.
+ */
+void sioNetwork::sio_set_pretty_query(const FujiSIOPacket &packet)
+{
+    uint8_t in[256];
+
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
+
+    memset(in, 0, sizeof(in));
+
+    SYSTEM_BUS.transaction_get(in, sizeof(in)); // TODO test checksum
+
+    // strip away line endings from input spec.
+    for (int i = 0; i < 256; i++)
+    {
+        if (in[i] == 0x0A || in[i] == 0x0D || in[i] == 0x9b)
+            in[i] = 0x00;
+    }
+
+    // Unlike JSON, a CSS selector can contain colons (e.g. div:first-child), so
+    // only strip a leading "N:"/"N#:" device prefix rather than splitting on a colon.
+    std::string inp_string(reinterpret_cast<char*>(in));
+    if (inp_string.size() >= 2 && (inp_string[0] == 'N' || inp_string[0] == 'n'))
+    {
+        size_t p = 1;
+        if (p < inp_string.size() && inp_string[p] >= '0' && inp_string[p] <= '9')
+            p++;
+        if (p < inp_string.size() && inp_string[p] == ':')
+            inp_string.erase(0, p + 1);
+    }
+
+    if (pretty == nullptr)
+    {
+        status.error = NDEV_STATUS::NOT_CONNECTED;
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    // An all-digits query is a link index, never a CSS selector (a CSS
+    // identifier cannot start with a digit): look up its URL instead of
+    // treating it as a section to render.
+    bool is_link_index = !inp_string.empty();
+    for (char c : inp_string)
+    {
+        if (c < '0' || c > '9')
+        {
+            is_link_index = false;
+            break;
+        }
+    }
+
+    if (is_link_index)
+    {
+        errno = 0;
+        unsigned long parsed = strtoul(inp_string.c_str(), nullptr, 10);
+        size_t index = (errno == ERANGE) ? 0 : (size_t)parsed; // overflow: no such link
+
+        std::string url = pretty->linkUrl(index);
+
+        if (url.empty()) // no such link number, index 0, or links never collected
+        {
+            Debug_printf("PRETTY link query %s -> no such link\r\n", inp_string.c_str());
+            receiveBuffer->clear();
+            pretty_link_pending = false;
+            status.error = NDEV_STATUS::END_OF_FILE;
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+
+        receiveBuffer->clear();
+        *receiveBuffer = url + "\x9b";
+        pretty_link_pending = true;
+
+        Debug_printf("PRETTY link query %s -> %s\r\n", inp_string.c_str(), url.c_str());
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    pretty->setQuery(inp_string);
+
+    // A re-render replaces the previous section, so drop anything staged from it.
+    receiveBuffer->clear();
+    pretty_link_pending = false;
+    pretty->rerender();
+
+    Debug_printf("PRETTY query set to >%s< (available=%d)\r\n",
+                 inp_string.c_str(), (int)pretty->available());
+    SYSTEM_BUS.transaction_success();
+}
+
+/**
  * Fetch the page and render it to plain text. Afterwards STATUS reports the
  * rendered size and READ drains it, so no query step is needed.
+ *
+ * A successful fetch whose query matched nothing (e.g. a CSS selector naming
+ * a section that doesn't exist on the page) also lands here: parse() reports
+ * true, but there is nothing rendered to read.
  */
 void sioNetwork::sio_parse_pretty()
 {
@@ -1402,8 +1541,9 @@ void sioNetwork::sio_parse_pretty()
 
     // A re-render replaces the previous page, so drop anything staged from it.
     receiveBuffer->clear();
+    pretty_link_pending = false; // a new page invalidates any staged link URL
 
-    if (!pretty->parse())
+    if (!pretty->parse() || pretty->available() == 0)
     {
         Debug_printf("sioNetwork::sio_parse_pretty() - nothing to render\r\n");
         status.error = NDEV_STATUS::END_OF_FILE;
@@ -1449,6 +1589,58 @@ void sioNetwork::sio_set_json_parameters(const FujiSIOPacket &packet)
         SYSTEM_BUS.transaction_error();
         break;
     }
+}
+
+/**
+ * @brief Set PRETTY renderer parameters. (must be in PRETTY channelMode)
+ *
+ * These settings change the layout of an already-rendered page, so a
+ * successfully applied parameter re-lays it out immediately (rerender()
+ * reuses the retained parse tree, so it does not re-fetch), keeping what
+ * STATUS/READ report consistent with the new settings.
+ */
+void sioNetwork::sio_set_pretty_parameters(const FujiSIOPacket &packet)
+{
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+
+    // aux1  | aux2  |    meaning
+    // 0     | 0/1   |  render links off/on (PRETTY_RENDER_LINKS)
+    // 1     |   c   |  line ending character
+    // 2     | cols  |  screen width in columns
+
+    if (pretty == nullptr)
+    {
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    switch (packet.param8(0))
+    {
+    case 0:     // RENDER LINKS
+        pretty->setRenderLinks(packet.param8(1) != 0);
+        break;
+    case 1:     // LINE ENDING
+    {
+        std::stringstream ss;
+        ss << packet.param8(1);
+        string new_le = ss.str();
+        Debug_printf("PRETTY line ending changed to 0x%02hx\r\n", packet.param(1));
+        pretty->setLineEnding(new_le);
+        break;
+    }
+    case 2:     // SCREEN WIDTH
+        pretty->setScreenWidth(packet.param8(1));
+        break;
+    default:
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    receiveBuffer->clear();
+    pretty_link_pending = false; // a new page invalidates any staged link URL
+    pretty->rerender(); // false just means nothing has been parsed yet, which is fine here
+
+    SYSTEM_BUS.transaction_success();
 }
 
 void sioNetwork::sio_set_timer_rate(const FujiSIOPacket &packet)
