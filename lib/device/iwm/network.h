@@ -14,6 +14,7 @@
 #include "bus.h"
 #include "fnjson.h"
 #include "fnsgml.h"
+#include "fnpretty.h"
 #include "network_data.h"
 #include "peoples_url_parser.h"
 #include "Protocol.h"
@@ -158,6 +159,17 @@ public:
      */
     void sgml_query(const iwm_decoded_cmd_t &cmd);
 
+    /**
+     * @brief Fetch and render a document to plain text. (must be in PRETTY channelMode)
+     */
+    void pretty_parse();
+
+    /**
+     * @brief Set PRETTY CSS selector query string, or (an all-digits payload)
+     * look up a collected link's URL by 1-based index. (must be in PRETTY channelMode)
+     */
+    void pretty_query(const iwm_decoded_cmd_t &cmd);
+
     std::unordered_map<uint8_t, NetworkData> network_data_map;
     uint8_t current_network_unit = 1;
 
@@ -247,6 +259,32 @@ private:
      * @return TRUE on error, FALSE on success. Passed directly to bus_to_computer().
      */
     error_is_true read_channel_sgml(const iwm_decoded_cmd_t &cmd);
+
+    /**
+     * Perform read of the current PRETTY channel
+     * @param num_bytes Number of bytes to read.
+     * @return TRUE on error, FALSE on success. Passed directly to bus_to_computer().
+     */
+    error_is_true read_channel_pretty(const iwm_decoded_cmd_t &cmd);
+
+    /**
+     * Rendered bytes still owed to the computer for the current network unit:
+     * what the renderer hasn't handed over yet, plus what a previous read
+     * already staged in receiveBuffer. A staged link URL is served to the
+     * exclusion of the page, so while one is pending it alone is what the
+     * computer is owed.
+     */
+    size_t pretty_bytes_remaining();
+
+    /**
+     * True while receiveBuffer (for the given network unit) holds a link URL
+     * staged by a numeric PRETTY query rather than rendered page text.
+     * STATUS/READ serve the URL to the exclusion of the document while it is
+     * set, so looking a link up does not disturb the client's position in
+     * the page. Keyed by network unit since network_data_map is; NetworkData
+     * itself (lib/network-protocol/network_data.h) isn't ours to extend.
+     */
+    std::unordered_map<uint8_t, bool> pretty_link_pending;
 
     /**
      * Perform the correct write based on value of channelMode

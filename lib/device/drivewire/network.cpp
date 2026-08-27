@@ -11,6 +11,9 @@
 #include "utils.h"
 #include "debug.h"
 
+#include <cerrno>
+#include <cstdlib>
+
 using namespace std;
 
 /**
@@ -84,6 +87,14 @@ void drivewireNetwork::open(fileAccessMode_t access, netProtoTranslation_t trans
         protocol.reset();
     }
 
+    // Pre-open cleanup: a client can send another O before a C, and unlike
+    // json/sgml the renderer must not silently leak the previous session.
+    if (pretty != nullptr)
+    {
+        delete pretty;
+        pretty = nullptr;
+    }
+
     // Parse and instantiate protocol
     parse_and_instantiate_protocol(access == ACCESS_MODE::DIRECTORY);
 
@@ -118,6 +129,15 @@ void drivewireNetwork::open(fileAccessMode_t access, netProtoTranslation_t trans
     sgml->setLineEnding("\x0a");
     sgml->setProtocol(protocol.get());
     sgml_bytes_remaining = 0; // reset per-open so a prior session's count doesn't leak
+
+    pretty = new FNPretty();
+    pretty->setLineEnding("\x0a");
+    pretty->setProtocol(protocol.get());
+    // The renderer resolves relative hrefs against the page URL when link
+    // collection is on.
+    pretty->setBaseUrl(urlParser->mRawUrl);
+    pretty_link_pending = false; // reset per-open so a prior session's flag doesn't leak
+
     channelMode = PROTOCOL;
 
     SYSTEM_BUS.transaction_success();
@@ -159,6 +179,12 @@ void drivewireNetwork::close()
     {
         delete sgml;
         sgml = nullptr;
+    }
+
+    if (pretty != nullptr)
+    {
+        delete pretty;
+        pretty = nullptr;
     }
 
 #ifdef ESP_PLATFORM
@@ -245,6 +271,49 @@ fujiError_t drivewireNetwork::read_channel_sgml(unsigned short num_bytes)
 }
 
 /**
+ * @brief Perform read of the current PRETTY channel
+ *
+ * The renderer holds the whole rendered page, so top receiveBuffer up from it
+ * on demand rather than staging the entire document at parse time. Short reads
+ * are padded with nulls, since read() always sends num_bytes back.
+ *
+ * While a link URL is staged (pretty_link_pending), receiveBuffer holds only
+ * that URL: it is served as-is, never topped up from the renderer, and the
+ * flag clears once this read drains it, so the page resumes on the next read.
+ *
+ * @param num_bytes Number of bytes to read
+ */
+fujiError_t drivewireNetwork::read_channel_pretty(unsigned short num_bytes)
+{
+    if (pretty == nullptr)
+        return FUJI_ERROR::UNSPECIFIED;
+
+    if (pretty_link_pending)
+    {
+        // Serving a staged link URL: never mix rendered page text into it.
+        if (receiveBuffer->size() <= num_bytes)
+            pretty_link_pending = false; // this read drains it; the page resumes after
+    }
+    else if (receiveBuffer->size() < num_bytes && pretty->available() > 0)
+    {
+        size_t want = num_bytes - receiveBuffer->size();
+        std::vector<uint8_t> tmp(want);
+        size_t got = pretty->readValue(tmp.data(), want);
+        receiveBuffer->append((const char *)tmp.data(), got);
+    }
+
+    if (receiveBuffer->size() < num_bytes)
+    {
+        bool at_eof = receiveBuffer->empty();
+        receiveBuffer->append(num_bytes - receiveBuffer->size(), '\0');
+        // Nothing at all left to give: tell the computer this read failed.
+        return at_eof ? FUJI_ERROR::UNSPECIFIED : FUJI_ERROR::NONE;
+    }
+
+    return FUJI_ERROR::NONE;
+}
+
+/**
  * Perform the channel read based on the channelMode
  * @param num_bytes - number of bytes to read from channel.
  * @return FUJI_ERROR::UNSPECIFIED on error, FUJI_ERROR::NONE on success. Passed directly to bus_to_computer().
@@ -263,6 +332,9 @@ fujiError_t drivewireNetwork::read_channel(unsigned short num_bytes)
         break;
     case SGML:
         err = read_channel_sgml(num_bytes);
+        break;
+    case PRETTY:
+        err = read_channel_pretty(num_bytes);
         break;
     }
     return err;
@@ -346,6 +418,10 @@ fujiError_t drivewireNetwork::write_channel(unsigned short num_bytes)
         Debug_printf("SGML Not Handled.\n");
         err = FUJI_ERROR::UNSPECIFIED;
         break;
+    case PRETTY:
+        Debug_printf("PRETTY Not Handled.\n");
+        err = FUJI_ERROR::UNSPECIFIED;
+        break;
     }
     return err;
 }
@@ -425,6 +501,30 @@ bool drivewireNetwork::status_channel_sgml(NetworkStatus *ns)
 }
 
 /**
+ * Rendered bytes still owed to the computer: what the renderer hasn't handed
+ * over yet, plus what a previous read already staged in receiveBuffer.
+ *
+ * A staged link URL is served to the exclusion of the page, so while one is
+ * pending it alone is what the computer is owed.
+ */
+size_t drivewireNetwork::pretty_bytes_remaining()
+{
+    if (pretty_link_pending)
+        return receiveBuffer->size();
+
+    return (pretty == nullptr ? 0 : pretty->available()) + receiveBuffer->size();
+}
+
+bool drivewireNetwork::status_channel_pretty(NetworkStatus *ns)
+{
+    size_t remaining = pretty_bytes_remaining();
+
+    ns->connected = remaining > 0;
+    ns->error = remaining > 0 ? NDEV_STATUS::SUCCESS : NDEV_STATUS::END_OF_FILE;
+    return false; // for now
+}
+
+/**
  * @brief perform channel status commands, if there is a protocol bound.
  */
 void drivewireNetwork::status_channel()
@@ -457,6 +557,10 @@ void drivewireNetwork::status_channel()
     case SGML:
         status_channel_sgml(&ns);
         avail = sgml_bytes_remaining;
+        break;
+    case PRETTY:
+        status_channel_pretty(&ns);
+        avail = pretty_bytes_remaining();
         break;
     }
 
@@ -565,8 +669,14 @@ void drivewireNetwork::set_prefix()
 
 /**
  * @brief set channel mode
+ *
+ * param(1) is unused by the other modes, so PRETTY reuses it to carry the
+ * client's screen width in columns (32/40/80); 0 keeps whatever width was
+ * set before (default 40), mirroring sio. Link rendering is off by default;
+ * drivewire has no NETCMD_SET_PARAMETERS command (not even for JSON) to turn
+ * it on, so it stays off for this bus.
  */
-void drivewireNetwork::set_channel_mode(uint8_t mode)
+void drivewireNetwork::set_channel_mode(uint8_t mode, uint8_t width)
 {
     switch (mode)
     {
@@ -578,6 +688,11 @@ void drivewireNetwork::set_channel_mode(uint8_t mode)
         break;
     case 2:
         channelMode = SGML;
+        break;
+    case 4:
+        channelMode = PRETTY;
+        if (pretty != nullptr)
+            pretty->setScreenWidth(width);
         break;
     default:
         break;
@@ -854,6 +969,174 @@ void drivewireNetwork::sgml_query()
     SYSTEM_BUS.transaction_success();
 }
 
+/**
+ * Fetch the page and render it to plain text. Afterwards STATUS reports the
+ * rendered size and READ drains it, so no query step is needed.
+ *
+ * A successful fetch whose query matched nothing (e.g. a CSS selector naming
+ * a section that doesn't exist on the page) also lands here: parse() reports
+ * true, but there is nothing rendered to read.
+ */
+void drivewireNetwork::parse_pretty()
+{
+    // A re-render replaces the previous page, so drop anything staged from it.
+    receiveBuffer->clear();
+    pretty_link_pending = false; // a new page invalidates any staged link URL
+
+    bool rendered = pretty != nullptr && pretty->parse() && pretty->available() > 0;
+
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+
+    if (!rendered)
+    {
+        Debug_printf("drivewireNetwork::parse_pretty() - nothing to render\n");
+        _errorCode = NDEV_STATUS::END_OF_FILE;
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    _errorCode = NDEV_STATUS::SUCCESS;
+    SYSTEM_BUS.transaction_success();
+}
+
+/**
+ * Set the PRETTY channel's query string. This does double duty:
+ *
+ * - A CSS selector names the section of the page the renderer shows. Unlike
+ *   the SGML query, this stages nothing into receiveBuffer and returns no
+ *   value: the client reads the re-rendered section back through the normal
+ *   STATUS/READ loop, and an empty selector restores the whole document.
+ *   The query re-lays-out the retained parse tree, so no re-fetch happens.
+ *
+ * - A query string made up of nothing but decimal digits is instead a
+ *   1-based index into the links collected while rendering, and the
+ *   resolved URL is staged into receiveBuffer for the following STATUS/READ
+ *   in place of page text. This is unambiguous: a CSS identifier can never
+ *   begin with a digit, so an all-digits query string can never be a valid
+ *   selector, and the two forms can never collide.
+ *
+ * - A query string beginning with '!' is an option assignment ("!links=1",
+ *   "!width=80", "!eol=13") - see FNPretty::setOption(). A CSS selector can
+ *   never begin with '!', so this cannot collide with either form above. This
+ *   is the only way iwm/adamnet reach these settings, since they have no
+ *   spare parameter byte for a native SET_PARAMETERS-style command.
+ */
+void drivewireNetwork::pretty_query()
+{
+    std::string in_string;
+    char tmpq[256];
+
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
+
+    if (SYSTEM_BUS.transaction_get(tmpq, sizeof(tmpq)).is_error())
+    {
+        Debug_printf("Short read. Exiting\n");
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    in_string = std::string(tmpq);
+
+    // strip away line endings from input spec.
+    for (int i = 0; i < in_string.size(); i++)
+    {
+        unsigned char currentChar = static_cast<unsigned char>(in_string[i]);
+        if (currentChar == 0x0A || currentChar == 0x0D || currentChar == 0x9b)
+        {
+            in_string.resize(i);
+            break;
+        }
+    }
+
+    // Unlike JSON, a CSS selector can contain colons (e.g. div:first-child), so
+    // only strip a leading "N:"/"N#:" device prefix rather than splitting on a colon.
+    if (in_string.size() >= 2 && (in_string[0] == 'N' || in_string[0] == 'n'))
+    {
+        size_t p = 1;
+        if (p < in_string.size() && in_string[p] >= '0' && in_string[p] <= '9')
+            p++;
+        if (p < in_string.size() && in_string[p] == ':')
+            in_string.erase(0, p + 1);
+    }
+
+    if (pretty == nullptr)
+    {
+        _errorCode = NDEV_STATUS::NOT_CONNECTED;
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    // An all-digits query is a link index, never a CSS selector (a CSS
+    // identifier cannot start with a digit): look up its URL instead of
+    // treating it as a section to render.
+    bool is_link_index = !in_string.empty();
+    for (char c : in_string)
+    {
+        if (c < '0' || c > '9')
+        {
+            is_link_index = false;
+            break;
+        }
+    }
+
+    if (is_link_index)
+    {
+        errno = 0;
+        unsigned long parsed = strtoul(in_string.c_str(), nullptr, 10);
+        size_t index = (errno == ERANGE) ? 0 : (size_t)parsed; // overflow: no such link
+
+        std::string url = pretty->linkUrl(index);
+
+        if (url.empty()) // no such link number, index 0, or links never collected
+        {
+            Debug_printf("PRETTY link query %s -> no such link\n", in_string.c_str());
+            receiveBuffer->clear();
+            pretty_link_pending = false;
+            _errorCode = NDEV_STATUS::END_OF_FILE;
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+
+        receiveBuffer->clear();
+        *receiveBuffer = url + "\x0a";
+        pretty_link_pending = true;
+
+        Debug_printf("PRETTY link query %s -> %s\n", in_string.c_str(), url.c_str());
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    // "!key=value" - an option assignment rather than a section selector.
+    // A CSS selector can never start with '!', so the two cannot collide.
+    PrettyOption opt = pretty->setOption(in_string);
+    if (opt != PrettyOption::NotAnOption)
+    {
+        if (opt == PrettyOption::Invalid)
+        {
+            _errorCode = NDEV_STATUS::END_OF_FILE;
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+        receiveBuffer->clear();
+        pretty_link_pending = false;
+        pretty->rerender();
+        Debug_printf("PRETTY option applied: %s\n", in_string.c_str());
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    pretty->setQuery(in_string);
+
+    // A re-render replaces the previous section, so drop anything staged from it.
+    receiveBuffer->clear();
+    pretty_link_pending = false;
+    pretty->rerender();
+
+    Debug_printf("PRETTY query set to >%s< (available=%d)\r\n",
+                 in_string.c_str(), (int)pretty->available());
+    SYSTEM_BUS.transaction_success();
+}
+
 bool drivewireNetwork::processCommand(const FujiDWPacket &packet)
 {
     Debug_printf("comnd: '%c' %u\n", packet.command(), packet.command());
@@ -880,11 +1163,13 @@ bool drivewireNetwork::processCommand(const FujiDWPacket &packet)
     case NETCMD_PARSE:
         if (channelMode == SGML)
             parse_sgml();
+        else if (channelMode == PRETTY)
+            parse_pretty();
         else
             parse_json();
         break;
     case NETCMD_CHANNEL_MODE:
-        set_channel_mode(packet.param(0));
+        set_channel_mode(packet.param8(0), packet.param8(1));
         break;
 
     case NETCMD_GETCWD:
@@ -897,6 +1182,8 @@ bool drivewireNetwork::processCommand(const FujiDWPacket &packet)
     case NETCMD_QUERY:
         if (channelMode == SGML)
             sgml_query();
+        else if (channelMode == PRETTY)
+            pretty_query();
         else
             json_query();
         break;

@@ -11,6 +11,9 @@
 #include "utils.h"
 #include "debug.h"
 
+#include <cerrno>
+#include <cstdlib>
+
 #define DEFAULT_LINE_ENDING "\n"
 
 using namespace std;
@@ -44,6 +47,7 @@ rs232Network::rs232Network()
 
     json.setLineEnding(DEFAULT_LINE_ENDING);
     sgml.setLineEnding(DEFAULT_LINE_ENDING);
+    pretty.setLineEnding(DEFAULT_LINE_ENDING);
 }
 
 /**
@@ -131,6 +135,12 @@ void rs232Network::rs232_open(fileAccessMode_t access, netProtoTranslation_t tra
     sgml.setProtocol(protocol.get());
     sgml.setLineEnding(DEFAULT_LINE_ENDING);
     sgml_bytes_remaining = 0; // reset per-open so a prior session's count doesn't leak
+    pretty.setProtocol(protocol.get());
+    pretty.setLineEnding(DEFAULT_LINE_ENDING);
+    // The renderer resolves relative hrefs against the page URL when link
+    // collection is on.
+    pretty.setBaseUrl(urlParser->mRawUrl);
+    pretty_link_pending = false; // reset per-open so a prior session's flag doesn't leak
     protocol->setLineEnding(DEFAULT_LINE_ENDING);
     channelMode = CHANNEL_MODE::PROTOCOL;
 
@@ -235,6 +245,46 @@ fujiError_t rs232Network::rs232_read_channel_sgml(uint16_t num_bytes)
 }
 
 /**
+ * @brief Perform read of the current PRETTY channel
+ *
+ * The renderer holds the whole rendered page, so top receiveBuffer up from it
+ * on demand rather than staging the entire document at parse time. Short reads
+ * are padded with nulls, since rs232_read() always sends num_bytes back.
+ *
+ * While a link URL is staged (pretty_link_pending), receiveBuffer holds only
+ * that URL: it is served as-is, never topped up from the renderer, and the
+ * flag clears once this read drains it, so the page resumes on the next read.
+ *
+ * @param num_bytes Number of bytes to read
+ */
+fujiError_t rs232Network::rs232_read_channel_pretty(uint16_t num_bytes)
+{
+    if (pretty_link_pending)
+    {
+        // Serving a staged link URL: never mix rendered page text into it.
+        if (receiveBuffer->size() <= num_bytes)
+            pretty_link_pending = false; // this read drains it; the page resumes after
+    }
+    else if (receiveBuffer->size() < num_bytes && pretty.available() > 0)
+    {
+        size_t want = num_bytes - receiveBuffer->size();
+        std::vector<uint8_t> tmp(want);
+        size_t got = pretty.readValue(tmp.data(), want);
+        receiveBuffer->append((const char *)tmp.data(), got);
+    }
+
+    if (receiveBuffer->size() < num_bytes)
+    {
+        bool at_eof = receiveBuffer->empty();
+        receiveBuffer->append(num_bytes - receiveBuffer->size(), '\0');
+        // Nothing at all left to give: tell the computer this read failed.
+        return at_eof ? FUJI_ERROR::UNSPECIFIED : FUJI_ERROR::NONE;
+    }
+
+    return FUJI_ERROR::NONE;
+}
+
+/**
  * Perform the channel read based on the channelMode
  * @param num_bytes - number of bytes to read from channel.
  * @return TRUE on error, FALSE on success. Passed directly to SYSTEM_BUS.transaction_send().
@@ -255,8 +305,7 @@ fujiError_t rs232Network::rs232_read_channel(uint16_t num_bytes)
         err = rs232_read_channel_sgml(num_bytes);
         break;
     case CHANNEL_MODE::PRETTY:
-        Debug_printf("PRETTY Not Handled.\n");
-        err = FUJI_ERROR::UNSPECIFIED;
+        err = rs232_read_channel_pretty(num_bytes);
         break;
     }
     return err;
@@ -410,6 +459,30 @@ fujiError_t rs232Network::rs232_status_channel_sgml(NetworkStatus *ns)
 }
 
 /**
+ * Rendered bytes still owed to the computer: what the renderer hasn't handed
+ * over yet, plus what a previous read already staged in receiveBuffer.
+ *
+ * A staged link URL is served to the exclusion of the page, so while one is
+ * pending it alone is what the computer is owed.
+ */
+size_t rs232Network::pretty_bytes_remaining()
+{
+    if (pretty_link_pending)
+        return receiveBuffer->size();
+
+    return pretty.available() + receiveBuffer->size();
+}
+
+fujiError_t rs232Network::rs232_status_channel_pretty(NetworkStatus *ns)
+{
+    size_t remaining = pretty_bytes_remaining();
+
+    ns->connected = remaining > 0;
+    ns->error = remaining > 0 ? NDEV_STATUS::SUCCESS : NDEV_STATUS::END_OF_FILE;
+    return FUJI_ERROR::NONE; // for now
+}
+
+/**
  * @brief perform channel status commands, if there is a protocol bound.
  */
 void rs232Network::rs232_status_channel()
@@ -441,7 +514,8 @@ void rs232Network::rs232_status_channel()
         avail = sgml_bytes_remaining;
         break;
     case CHANNEL_MODE::PRETTY:
-        Debug_printf("PRETTY Not Handled.\n");
+        rs232_status_channel_pretty(&status);
+        avail = pretty_bytes_remaining();
         break;
     }
 
@@ -557,8 +631,14 @@ void rs232Network::rs232_set_prefix()
 
 /**
  * @brief set channel mode
+ *
+ * param(0) is unused by the other modes, so PRETTY reuses it to carry the
+ * client's screen width in columns (32/40/80); 0 keeps whatever width was
+ * set before (default 40), mirroring sio. Link rendering is off by default;
+ * rs232 has no NETCMD_SET_PARAMETERS command (not even for JSON) to turn it
+ * on, so it stays off for this bus.
  */
-void rs232Network::rs232_set_channel_mode(channelMode_t newMode) // was aux2
+void rs232Network::rs232_set_channel_mode(channelMode_t newMode, uint8_t width) // was aux2
 {
     switch (newMode)
     {
@@ -566,6 +646,11 @@ void rs232Network::rs232_set_channel_mode(channelMode_t newMode) // was aux2
     case CHANNEL_MODE::JSON:
     case CHANNEL_MODE::SGML:
         channelMode = newMode;
+        SYSTEM_BUS.transaction_success();
+        break;
+    case CHANNEL_MODE::PRETTY:
+        channelMode = newMode;
+        pretty.setScreenWidth(width);
         SYSTEM_BUS.transaction_success();
         break;
     default:
@@ -780,12 +865,16 @@ void rs232Network::rs232_process(const FujiBusPacket &packet)
         SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
         if (channelMode == CHANNEL_MODE::SGML)
             rs232_parse_sgml();
+        else if (channelMode == CHANNEL_MODE::PRETTY)
+            rs232_parse_pretty();
         else
             rs232_parse_json();
         break;
     case NETCMD_QUERY:
         if (channelMode == CHANNEL_MODE::SGML)
             rs232_set_sgml_query();
+        else if (channelMode == CHANNEL_MODE::PRETTY)
+            rs232_set_pretty_query();
         else
             rs232_set_json_query();
         break;
@@ -797,7 +886,7 @@ void rs232Network::rs232_process(const FujiBusPacket &packet)
         else
         {
             SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
-            rs232_set_channel_mode((channelMode_t) packet.param(1));
+            rs232_set_channel_mode((channelMode_t) packet.param(1), (uint8_t) packet.param(0));
         }
         break;
     case NETCMD_SEEK:
@@ -1172,6 +1261,152 @@ void rs232Network::rs232_set_sgml_query()
     *receiveBuffer += string((const char *)tmp, query_bytes);
     free(tmp);
     Debug_printf("SGML query set to %s\n", inp_string.c_str());
+    SYSTEM_BUS.transaction_success();
+}
+
+/**
+ * Fetch the page and render it to plain text. Afterwards STATUS reports the
+ * rendered size and READ drains it, so no query step is needed.
+ *
+ * A successful fetch whose query matched nothing (e.g. a CSS selector naming
+ * a section that doesn't exist on the page) also lands here: parse() reports
+ * true, but there is nothing rendered to read.
+ */
+void rs232Network::rs232_parse_pretty()
+{
+    // A re-render replaces the previous page, so drop anything staged from it.
+    receiveBuffer->clear();
+    pretty_link_pending = false; // a new page invalidates any staged link URL
+
+    if (!pretty.parse() || pretty.available() == 0)
+    {
+        Debug_printf("rs232Network::rs232_parse_pretty() - nothing to render\n");
+        status.error = NDEV_STATUS::END_OF_FILE;
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    Debug_printf("rs232Network::rs232_parse_pretty() - %u bytes at %u columns\n",
+                 (unsigned)pretty.available(), pretty.screenWidth());
+    SYSTEM_BUS.transaction_success();
+}
+
+/**
+ * Set the PRETTY channel's query string. This does double duty:
+ *
+ * - A CSS selector names the section of the page the renderer shows. Unlike
+ *   the SGML query, this stages nothing into receiveBuffer and returns no
+ *   value: the client reads the re-rendered section back through the normal
+ *   STATUS/READ loop, and an empty selector restores the whole document.
+ *   The query re-lays-out the retained parse tree, so no re-fetch happens.
+ *
+ * - A query string made up of nothing but decimal digits is instead a
+ *   1-based index into the links collected while rendering, and the
+ *   resolved URL is staged into receiveBuffer for the following STATUS/READ
+ *   in place of page text. This is unambiguous: a CSS identifier can never
+ *   begin with a digit, so an all-digits query string can never be a valid
+ *   selector, and the two forms can never collide.
+ *
+ * - A query string beginning with '!' is an option assignment ("!links=1",
+ *   "!width=80", "!eol=13") - see FNPretty::setOption(). A CSS selector can
+ *   never begin with '!', so this cannot collide with either form above. This
+ *   is the only way iwm/adamnet reach these settings, since they have no
+ *   spare parameter byte for a native SET_PARAMETERS-style command.
+ */
+void rs232Network::rs232_set_pretty_query()
+{
+    uint8_t in[256];
+
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
+    SYSTEM_BUS.transaction_get(in, sizeof(in));
+
+    // strip away line endings from input spec.
+    for (int i = 0; i < 256; i++)
+    {
+        if (in[i] == 0x0A || in[i] == 0x0D || in[i] == 0x9b)
+            in[i] = 0x00;
+    }
+
+    // Unlike JSON, a CSS selector can contain colons (e.g. div:first-child), so
+    // only strip a leading "N:"/"N#:" device prefix rather than splitting on a colon.
+    std::string inp_string(reinterpret_cast<char*>(in));
+    if (inp_string.size() >= 2 && (inp_string[0] == 'N' || inp_string[0] == 'n'))
+    {
+        size_t p = 1;
+        if (p < inp_string.size() && inp_string[p] >= '0' && inp_string[p] <= '9')
+            p++;
+        if (p < inp_string.size() && inp_string[p] == ':')
+            inp_string.erase(0, p + 1);
+    }
+
+    // An all-digits query is a link index, never a CSS selector (a CSS
+    // identifier cannot start with a digit): look up its URL instead of
+    // treating it as a section to render.
+    bool is_link_index = !inp_string.empty();
+    for (char c : inp_string)
+    {
+        if (c < '0' || c > '9')
+        {
+            is_link_index = false;
+            break;
+        }
+    }
+
+    if (is_link_index)
+    {
+        errno = 0;
+        unsigned long parsed = strtoul(inp_string.c_str(), nullptr, 10);
+        size_t index = (errno == ERANGE) ? 0 : (size_t)parsed; // overflow: no such link
+
+        std::string url = pretty.linkUrl(index);
+
+        if (url.empty()) // no such link number, index 0, or links never collected
+        {
+            Debug_printf("PRETTY link query %s -> no such link\n", inp_string.c_str());
+            receiveBuffer->clear();
+            pretty_link_pending = false;
+            status.error = NDEV_STATUS::END_OF_FILE;
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+
+        receiveBuffer->clear();
+        *receiveBuffer = url + DEFAULT_LINE_ENDING;
+        pretty_link_pending = true;
+
+        Debug_printf("PRETTY link query %s -> %s\n", inp_string.c_str(), url.c_str());
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    // "!key=value" - an option assignment rather than a section selector.
+    // A CSS selector can never start with '!', so the two cannot collide.
+    PrettyOption opt = pretty.setOption(inp_string);
+    if (opt != PrettyOption::NotAnOption)
+    {
+        if (opt == PrettyOption::Invalid)
+        {
+            status.error = NDEV_STATUS::END_OF_FILE;
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+        receiveBuffer->clear();
+        pretty_link_pending = false;
+        pretty.rerender();
+        Debug_printf("PRETTY option applied: %s\n", inp_string.c_str());
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    pretty.setQuery(inp_string);
+
+    // A re-render replaces the previous section, so drop anything staged from it.
+    receiveBuffer->clear();
+    pretty_link_pending = false;
+    pretty.rerender();
+
+    Debug_printf("PRETTY query set to %s (available=%d)\n",
+                 inp_string.c_str(), (int)pretty.available());
     SYSTEM_BUS.transaction_success();
 }
 

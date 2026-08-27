@@ -14,6 +14,7 @@
 #include "network_data.h"
 #include "fnjson.h"
 #include "fnsgml.h"
+#include "fnpretty.h"
 
 /**
  * Number of devices to expose via RS232, becomes 0x71 to 0x70 + NUM_DEVICES - 1
@@ -91,8 +92,10 @@ public:
 
     /**
      * @brief set channel mode, JSON or PROTOCOL
+     * @param width screen width in columns for PRETTY (0 keeps the current width);
+     * ignored for the other modes.
      */
-    void rs232_set_channel_mode(channelMode_t chanMode);
+    void rs232_set_channel_mode(channelMode_t chanMode, uint8_t width = 0);
 
     /**
      * @brief Called to set prefix
@@ -260,6 +263,21 @@ private:
     uint16_t sgml_bytes_remaining = 0;
 
     /**
+     * The pretty renderer object (document rendered to plain text). rs232 has
+     * no NETCMD_SET_PARAMETERS command (not even for JSON), so there is no
+     * way to turn on link rendering for this bus; it stays off.
+     */
+    FNPretty pretty;
+
+    /**
+     * True while receiveBuffer holds a link URL staged by a numeric PRETTY query
+     * rather than rendered page text. STATUS/READ serve the URL to the exclusion
+     * of the document while it is set, so looking a link up does not disturb the
+     * client's position in the document.
+     */
+    bool pretty_link_pending = false;
+
+    /**
      * Instantiate protocol object
      * @return bool TRUE if protocol successfully called open(), FALSE if protocol could not open
      */
@@ -319,6 +337,12 @@ private:
     fujiError_t rs232_read_channel_sgml(uint16_t num_bytes);
 
     /**
+     * @brief Perform read of the current PRETTY channel
+     * @param num_bytes Number of bytes to read
+     */
+    fujiError_t rs232_read_channel_pretty(uint16_t num_bytes);
+
+    /**
      * Perform the correct write based on value of channelMode
      * @param num_bytes Number of bytes to write.
      * @return FUJI_ERROR::UNSPECIFIED on error, FUJI_ERROR::NONE on success. Used to emit rs232_error or rs232_complete().
@@ -345,6 +369,11 @@ private:
      * @brief get SGML status (# of bytes in receive channel)
      */
     fujiError_t rs232_status_channel_sgml(NetworkStatus *ns);
+
+    /**
+     * @brief get PRETTY status (# of bytes of rendered text left to read)
+     */
+    fujiError_t rs232_status_channel_pretty(NetworkStatus *ns);
 
     /**
      * Called to pulse the PROCEED interrupt, rate limited by the interrupt timer.
@@ -380,6 +409,23 @@ private:
      * @brief Set SGML CSS selector query std::string. (must be in SGML channelMode)
      */
     void rs232_set_sgml_query();
+
+    /**
+     * @brief Fetch and render a document to plain text. (must be in PRETTY channelMode)
+     */
+    void rs232_parse_pretty();
+
+    /**
+     * @brief Set PRETTY CSS selector query string, or (an all-digits payload)
+     * look up a collected link's URL by 1-based index. (must be in PRETTY channelMode)
+     */
+    void rs232_set_pretty_query();
+
+    /**
+     * @brief Bytes of rendered text still to be handed to the computer,
+     * counting what's already staged in receiveBuffer.
+     */
+    size_t pretty_bytes_remaining();
 
     /**
      * @brief Set timer rate for PROCEED timer in ms

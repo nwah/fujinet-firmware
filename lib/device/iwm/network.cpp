@@ -9,6 +9,9 @@
 #include "NetworkProtocolFactory.h"
 #include "utils.h"
 
+#include <cerrno>
+#include <cstdlib>
+
 using namespace std;
 
 /**
@@ -84,6 +87,7 @@ void iwmNetwork::open(const iwm_decoded_cmd_t &cmd)
         current_network_data.protocol.reset();
         current_network_data.json.reset();
         current_network_data.sgml.reset();
+        current_network_data.pretty.reset();
         current_network_data.urlParser.reset();
     }
 
@@ -136,6 +140,14 @@ void iwmNetwork::open(const iwm_decoded_cmd_t &cmd)
     current_network_data.sgml->setProtocol(current_network_data.protocol.get());
     current_network_data.sgml->setLineEnding("\x0a");
 
+    current_network_data.pretty = std::make_unique<FNPretty>();
+    current_network_data.pretty->setProtocol(current_network_data.protocol.get());
+    current_network_data.pretty->setLineEnding("\x0a");
+    // The renderer resolves relative hrefs against the page URL when link
+    // collection is on.
+    current_network_data.pretty->setBaseUrl(current_network_data.urlParser->mRawUrl);
+    pretty_link_pending[current_network_unit] = false; // reset per-open so a prior session's flag doesn't leak
+
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
     SYSTEM_BUS.transaction_success();
 }
@@ -169,9 +181,11 @@ void iwmNetwork::close()
     if (current_network_data.protocol) current_network_data.protocol.reset();
     if (current_network_data.json) current_network_data.json.reset();
     if (current_network_data.sgml) current_network_data.sgml.reset();
+    if (current_network_data.pretty) current_network_data.pretty.reset();
     if (current_network_data.urlParser) current_network_data.urlParser.reset();
 
     network_data_map.erase(current_network_unit);
+    pretty_link_pending.erase(current_network_unit);
 
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
     SYSTEM_BUS.transaction_success();
@@ -286,6 +300,15 @@ void iwmNetwork::channel_mode(const iwm_decoded_cmd_t &cmd)
         Debug_printf("channelMode = SGML\n");
         current_network_data.channelMode = mode;
         break;
+    case CHANNEL_MODE::PRETTY:
+        Debug_printf("channelMode = PRETTY\n");
+        // This command's payload here is just the mode byte (cmd.param8(0));
+        // there is no second byte to carry screen width the way sio's aux1
+        // does. Width stays at FNPretty's default (40) - iwm has no
+        // NETCMD_SET_PARAMETERS handling (below) to change it after open,
+        // so this bus gets no live control for it.
+        current_network_data.channelMode = mode;
+        break;
     default:
         Debug_printf("INVALID MODE = %02x\r\n", mode);
         SYSTEM_BUS.transaction_error();
@@ -345,6 +368,158 @@ void iwmNetwork::sgml_parse()
     SYSTEM_BUS.transaction_success();
 }
 
+/**
+ * Set the PRETTY channel's query string. This does double duty:
+ *
+ * - A CSS selector names the section of the page the renderer shows. Unlike
+ *   the SGML query, this stages nothing into receiveBuffer and returns no
+ *   value: the client reads the re-rendered section back through the normal
+ *   STATUS/READ loop, and an empty selector restores the whole document.
+ *   The query re-lays-out the retained parse tree, so no re-fetch happens.
+ *
+ * - A query string made up of nothing but decimal digits is instead a
+ *   1-based index into the links collected while rendering, and the
+ *   resolved URL is staged into receiveBuffer for the following STATUS/READ
+ *   in place of page text. This is unambiguous: a CSS identifier can never
+ *   begin with a digit, so an all-digits query string can never be a valid
+ *   selector, and the two forms can never collide.
+ *
+ * - A query string beginning with '!' is an option assignment ("!links=1",
+ *   "!width=80", "!eol=13") - see FNPretty::setOption(). A CSS selector can
+ *   never begin with '!', so this cannot collide with either form above. This
+ *   is the only way this bus reaches these settings, having no spare
+ *   parameter byte for a native SET_PARAMETERS-style command.
+ */
+void iwmNetwork::pretty_query(const iwm_decoded_cmd_t &cmd)
+{
+    auto& current_network_data = network_data_map[current_network_unit];
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+    std::string buffer = cmd.dataAsString().value();
+    buffer.resize(strlen(buffer.c_str())); // Truncate to null terminator
+
+    // Unlike JSON, a CSS selector can contain colons (e.g. div:first-child), so
+    // only strip a leading "N:"/"N#:" device prefix rather than splitting on a colon.
+    if (buffer.size() >= 2 && (buffer[0] == 'N' || buffer[0] == 'n'))
+    {
+        size_t p = 1;
+        if (p < buffer.size() && buffer[p] >= '0' && buffer[p] <= '9')
+            p++;
+        if (p < buffer.size() && buffer[p] == ':')
+            buffer.erase(0, p + 1);
+    }
+
+    if (current_network_data.pretty == nullptr)
+    {
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    // An all-digits query is a link index, never a CSS selector (a CSS
+    // identifier cannot start with a digit): look up its URL instead of
+    // treating it as a section to render.
+    bool is_link_index = !buffer.empty();
+    for (char c : buffer)
+    {
+        if (c < '0' || c > '9')
+        {
+            is_link_index = false;
+            break;
+        }
+    }
+
+    bool &link_pending = pretty_link_pending[current_network_unit];
+
+    if (is_link_index)
+    {
+        errno = 0;
+        unsigned long parsed = strtoul(buffer.c_str(), nullptr, 10);
+        size_t index = (errno == ERANGE) ? 0 : (size_t)parsed; // overflow: no such link
+
+        std::string url = current_network_data.pretty->linkUrl(index);
+
+        if (url.empty()) // no such link number, index 0, or links never collected
+        {
+            Debug_printf("PRETTY link query %s -> no such link\r\n", buffer.c_str());
+            current_network_data.receiveBuffer.clear();
+            link_pending = false;
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+
+        current_network_data.receiveBuffer.clear();
+        current_network_data.receiveBuffer = url + "\x0a";
+        link_pending = true;
+
+        Debug_printf("PRETTY link query %s -> %s\r\n", buffer.c_str(), url.c_str());
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    // "!key=value" - an option assignment rather than a section selector.
+    // A CSS selector can never start with '!', so the two cannot collide.
+    PrettyOption opt = current_network_data.pretty->setOption(buffer);
+    if (opt != PrettyOption::NotAnOption)
+    {
+        if (opt == PrettyOption::Invalid)
+        {
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+        current_network_data.receiveBuffer.clear();
+        link_pending = false;
+        current_network_data.pretty->rerender();
+        Debug_printf("PRETTY option applied: %s\r\n", buffer.c_str());
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    current_network_data.pretty->setQuery(buffer);
+
+    // A re-render replaces the previous section, so drop anything staged from it.
+    current_network_data.receiveBuffer.clear();
+    link_pending = false;
+    current_network_data.pretty->rerender();
+
+    Debug_printf("PRETTY query set to >%s< (available=%d)\r\n",
+                 buffer.c_str(), (int)current_network_data.pretty->available());
+    SYSTEM_BUS.transaction_success();
+}
+
+/**
+ * Fetch the page and render it to plain text. Afterwards STATUS reports the
+ * rendered size and READ drains it, so no query step is needed.
+ *
+ * A successful fetch whose query matched nothing (e.g. a CSS selector naming
+ * a section that doesn't exist on the page) also lands here: parse() reports
+ * true, but there is nothing rendered to read.
+ */
+void iwmNetwork::pretty_parse()
+{
+    auto& current_network_data = network_data_map[current_network_unit];
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+
+    if (current_network_data.pretty == nullptr)
+    {
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    // A re-render replaces the previous page, so drop anything staged from it.
+    current_network_data.receiveBuffer.clear();
+    pretty_link_pending[current_network_unit] = false; // a new page invalidates any staged link URL
+
+    if (!current_network_data.pretty->parse() || current_network_data.pretty->available() == 0)
+    {
+        Debug_printf("iwmNetwork::pretty_parse() - nothing to render\r\n");
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    Debug_printf("iwmNetwork::pretty_parse() - %u bytes at %u columns\r\n",
+                 (unsigned)current_network_data.pretty->available(), current_network_data.pretty->screenWidth());
+    SYSTEM_BUS.transaction_success();
+}
+
 void iwmNetwork::iwm_open(const iwm_decoded_cmd_t &cmd)
 {
     // nothing in fujinet-lib calls this, it does a control with open command. This is used only by the Apple/// as it has no fn-lib support yet
@@ -390,7 +565,9 @@ void iwmNetwork::status()
         avail = current_network_data.sgml->available();
         break;
     case CHANNEL_MODE::PRETTY:
-        Debug_printf("PRETTY Not Handled.\n");
+        avail = pretty_bytes_remaining();
+        s.connected = avail > 0;
+        s.error = avail > 0 ? NDEV_STATUS::SUCCESS : NDEV_STATUS::END_OF_FILE;
         break;
     }
 
@@ -481,6 +658,81 @@ error_is_true iwmNetwork::read_channel_sgml(const iwm_decoded_cmd_t &cmd)
     RETURN_SUCCESS_AS_FALSE();
 }
 
+/**
+ * Rendered bytes still owed to the computer for the current network unit,
+ * counting what's already staged in receiveBuffer. See pretty_link_pending's
+ * doc comment (network.h) for why a staged link URL takes over receiveBuffer.
+ */
+size_t iwmNetwork::pretty_bytes_remaining()
+{
+    auto& current_network_data = network_data_map[current_network_unit];
+
+    if (pretty_link_pending[current_network_unit])
+        return current_network_data.receiveBuffer.size();
+
+    return (current_network_data.pretty ? current_network_data.pretty->available() : 0)
+           + current_network_data.receiveBuffer.size();
+}
+
+/**
+ * @brief Perform read of the current PRETTY channel
+ *
+ * The renderer holds the whole rendered page, so top receiveBuffer up from it
+ * on demand rather than staging the entire document at parse time.
+ *
+ * While a link URL is staged (pretty_link_pending), receiveBuffer holds only
+ * that URL: it is served as-is, never topped up from the renderer, and the
+ * flag clears once this read drains it, so the page resumes on the next read.
+ */
+error_is_true iwmNetwork::read_channel_pretty(const iwm_decoded_cmd_t &cmd)
+{
+    auto& current_network_data = network_data_map[current_network_unit];
+
+    if (current_network_data.pretty == nullptr)
+        RETURN_ERROR_AS_TRUE();
+
+    bool &link_pending = pretty_link_pending[current_network_unit];
+
+    if (link_pending)
+    {
+        // Serving a staged link URL: never mix rendered page text into it.
+        size_t avail = current_network_data.receiveBuffer.size();
+        if (avail == 0)
+        {
+            SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+            SYSTEM_BUS.transaction_success();
+            RETURN_ERROR_AS_TRUE();
+        }
+
+        size_t rlen = std::min<size_t>((size_t)cmd.frame.char_rw.length, avail);
+        ByteBuffer buffer(current_network_data.receiveBuffer.begin(),
+                           current_network_data.receiveBuffer.begin() + rlen);
+        current_network_data.receiveBuffer.erase(0, rlen);
+        if (current_network_data.receiveBuffer.empty())
+            link_pending = false; // this read drains it; the page resumes after
+
+        SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+        SYSTEM_BUS.transaction_send(buffer);
+        RETURN_SUCCESS_AS_FALSE();
+    }
+
+    Debug_printf("read_channel_pretty - num_bytes: %02x, pretty_bytes_remaining: %02x\n",
+                 cmd.frame.char_rw.length, (unsigned)current_network_data.pretty->available());
+    if (current_network_data.pretty->available() == 0) // if no bytes, we just return with no data
+    {
+        SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+        SYSTEM_BUS.transaction_success();
+        RETURN_ERROR_AS_TRUE();
+    }
+
+    size_t rlen = std::min<size_t>({(size_t)cmd.frame.char_rw.length, current_network_data.pretty->available()});
+    ByteBuffer buffer(rlen, 0);
+    current_network_data.pretty->readValue(buffer.data(), buffer.size());
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+    SYSTEM_BUS.transaction_send(buffer);
+    RETURN_SUCCESS_AS_FALSE();
+}
+
 error_is_true iwmNetwork::read_channel(const iwm_decoded_cmd_t &cmd)
 {
     NetworkStatus ns;
@@ -545,7 +797,7 @@ void iwmNetwork::iwm_read(const iwm_decoded_cmd_t &cmd)
         read_channel_sgml(cmd);
         break;
     case CHANNEL_MODE::PRETTY:
-        Debug_printf("PRETTY Not Handled.\n");
+        read_channel_pretty(cmd);
         break;
     }
 }
@@ -655,12 +907,16 @@ void iwmNetwork::iwm_ctrl(const iwm_decoded_cmd_t &cmd)
     case NETCMD_PARSE:
         if (current_network_data.channelMode == CHANNEL_MODE::SGML)
             sgml_parse();
+        else if (current_network_data.channelMode == CHANNEL_MODE::PRETTY)
+            pretty_parse();
         else
             json_parse();
         break;
     case NETCMD_QUERY:
         if (current_network_data.channelMode == CHANNEL_MODE::SGML)
             sgml_query(cmd);
+        else if (current_network_data.channelMode == CHANNEL_MODE::PRETTY)
+            pretty_query(cmd);
         else
             json_query(cmd);
         break;

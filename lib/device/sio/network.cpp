@@ -1431,6 +1431,12 @@ void sioNetwork::sio_set_sgml_query(const FujiSIOPacket &packet)
  *   in place of page text. This is unambiguous: a CSS identifier can never
  *   begin with a digit, so an all-digits query string can never be a valid
  *   selector, and the two forms can never collide.
+ *
+ * - A query string beginning with '!' is an option assignment ("!links=1",
+ *   "!width=80", "!eol=13") - see FNPretty::setOption(). A CSS selector can
+ *   never begin with '!', so this cannot collide with either form above. This
+ *   is the only way iwm/adamnet reach these settings, since they have no
+ *   spare parameter byte for a native SET_PARAMETERS-style command.
  */
 void sioNetwork::sio_set_pretty_query(const FujiSIOPacket &packet)
 {
@@ -1504,6 +1510,25 @@ void sioNetwork::sio_set_pretty_query(const FujiSIOPacket &packet)
         pretty_link_pending = true;
 
         Debug_printf("PRETTY link query %s -> %s\r\n", inp_string.c_str(), url.c_str());
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    // "!key=value" - an option assignment rather than a section selector.
+    // A CSS selector can never start with '!', so the two cannot collide.
+    PrettyOption opt = pretty->setOption(inp_string);
+    if (opt != PrettyOption::NotAnOption)
+    {
+        if (opt == PrettyOption::Invalid)
+        {
+            status.error = NDEV_STATUS::END_OF_FILE;
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+        receiveBuffer->clear();
+        pretty_link_pending = false;
+        pretty->rerender();
+        Debug_printf("PRETTY option applied: %s\r\n", inp_string.c_str());
         SYSTEM_BUS.transaction_success();
         return;
     }

@@ -10,6 +10,9 @@
 #include "utils.h"
 #include "debug.h"
 
+#include <cerrno>
+#include <cstdlib>
+
 #define MAX_ADAM_PACKET_LEN 1024
 
 using namespace std;
@@ -36,6 +39,12 @@ adamNetwork::adamNetwork()
 
     json.setLineEnding("\x00");
     sgml.setLineEnding("\x00");
+    // NOT "\x00" like json/sgml above: that C-string literal yields a
+    // zero-length std::string. Those two append a terminator once to a query
+    // result, so an empty one is harmless; PRETTY emits every rendered line
+    // with it, and an empty ending would collapse the whole document onto a
+    // single line. ADAM's EOL is CR, matching protocol->setLineEnding() below.
+    pretty.setLineEnding("\x0d");
 }
 
 /**
@@ -100,6 +109,7 @@ void adamNetwork::open(const FujiAdamPacket &packet)
         protocol.reset();
         json.setProtocol(nullptr);
         sgml.setProtocol(nullptr);
+        pretty.setProtocol(nullptr);
     }
 
     // Reset status buffer
@@ -132,6 +142,7 @@ void adamNetwork::open(const FujiAdamPacket &packet)
         protocol.reset();
         json.setProtocol(nullptr);
         sgml.setProtocol(nullptr);
+        pretty.setProtocol(nullptr);
         SYSTEM_BUS.transaction_error();
         return;
     }
@@ -139,6 +150,11 @@ void adamNetwork::open(const FujiAdamPacket &packet)
     // Associate channel mode
     json.setProtocol(protocol.get());
     sgml.setProtocol(protocol.get());
+    pretty.setProtocol(protocol.get());
+    // The renderer resolves relative hrefs against the page URL when link
+    // collection is on.
+    pretty.setBaseUrl(urlParser->mRawUrl);
+    pretty_link_pending = false; // reset per-open so a prior session's flag doesn't leak
 
     // Clear response
     Debug_printf("::open() complete err=%d\n", statusByte.bits.client_error);
@@ -169,9 +185,10 @@ void adamNetwork::close()
     // Delete the protocol object
     protocol.reset();
 
-    // Don't leave json/sgml holding a dangling protocol pointer
+    // Don't leave json/sgml/pretty holding a dangling protocol pointer
     json.setProtocol(nullptr);
     sgml.setProtocol(nullptr);
+    pretty.setProtocol(nullptr);
 }
 
 /**
@@ -227,6 +244,10 @@ fujiError_t adamNetwork::adamnet_write_channel(unsigned short num_bytes)
         Debug_printf("SGML Not Handled.\n");
         err_net = FUJI_ERROR::UNSPECIFIED;
         break;
+    case CHANNEL_MODE::PRETTY:
+        Debug_printf("PRETTY Not Handled.\n");
+        err_net = FUJI_ERROR::UNSPECIFIED;
+        break;
     }
     return err_net;
 }
@@ -251,6 +272,8 @@ void adamNetwork::status()
     }
     else
     {
+        size_t avail = protocol->available();
+
         switch (channelMode)
         {
         case CHANNEL_MODE::PROTOCOL:
@@ -262,9 +285,16 @@ void adamNetwork::status()
         case CHANNEL_MODE::SGML:
             // err = sgml.status(&status);
             break;
+        case CHANNEL_MODE::PRETTY:
+        {
+            size_t remaining = pretty_bytes_remaining();
+            ns.connected = remaining > 0;
+            ns.error = remaining > 0 ? NDEV_STATUS::SUCCESS : NDEV_STATUS::END_OF_FILE;
+            avail = remaining;
+            break;
+        }
         }
 
-        size_t avail = protocol->available();
         avail = avail > 65535 ? 65535 : avail;
         status.avail = avail;
         status.conn = ns.connected;
@@ -364,6 +394,14 @@ void adamNetwork::channel_mode(const FujiAdamPacket &packet)
     case CHANNEL_MODE::SGML:
         channelMode = mode;
         break;
+    case CHANNEL_MODE::PRETTY:
+        // This command's payload here is just the mode byte (packet.param8(0));
+        // there is no second byte to carry screen width the way sio's aux1
+        // does. Width stays at FNPretty's default (40) - adamnet has no
+        // NETCMD_SET_PARAMETERS handling (below) to change it after open,
+        // so this bus gets no live control for it.
+        channelMode = mode;
+        break;
     default:
         SYSTEM_BUS.transaction_error();
         return;
@@ -405,6 +443,149 @@ void adamNetwork::sgml_parse()
     if (protocol != nullptr)
         protocol->error = ok ? NDEV_STATUS::SUCCESS : NDEV_STATUS::COULD_NOT_PARSE_JSON;
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+    SYSTEM_BUS.transaction_success();
+}
+
+/**
+ * Set the PRETTY channel's query string. This does double duty:
+ *
+ * - A CSS selector names the section of the page the renderer shows. Unlike
+ *   the SGML query, this stages nothing into receiveBuffer and returns no
+ *   value: the client reads the re-rendered section back through the normal
+ *   STATUS/READ loop, and an empty selector restores the whole document.
+ *   The query re-lays-out the retained parse tree, so no re-fetch happens.
+ *
+ * - A query string made up of nothing but decimal digits is instead a
+ *   1-based index into the links collected while rendering, and the
+ *   resolved URL is staged into receiveBuffer for the following STATUS/READ
+ *   in place of page text. This is unambiguous: a CSS identifier can never
+ *   begin with a digit, so an all-digits query string can never be a valid
+ *   selector, and the two forms can never collide.
+ *
+ * - A query string beginning with '!' is an option assignment ("!links=1",
+ *   "!width=80", "!eol=13") - see FNPretty::setOption(). A CSS selector can
+ *   never begin with '!', so this cannot collide with either form above. This
+ *   is the only way this bus reaches these settings, having no spare
+ *   parameter byte for a native SET_PARAMETERS-style command.
+ */
+void adamNetwork::pretty_query(const FujiAdamPacket &packet)
+{
+    std::string buffer = packet.dataAsString().value();
+
+    // Unlike JSON, a CSS selector can contain colons (e.g. div:first-child), so
+    // only strip a leading "N:"/"N#:" device prefix rather than splitting on a colon.
+    if (buffer.size() >= 2 && (buffer[0] == 'N' || buffer[0] == 'n'))
+    {
+        size_t p = 1;
+        if (p < buffer.size() && buffer[p] >= '0' && buffer[p] <= '9')
+            p++;
+        if (p < buffer.size() && buffer[p] == ':')
+            buffer.erase(0, p + 1);
+    }
+
+    // An all-digits query is a link index, never a CSS selector (a CSS
+    // identifier cannot start with a digit): look up its URL instead of
+    // treating it as a section to render.
+    bool is_link_index = !buffer.empty();
+    for (char c : buffer)
+    {
+        if (c < '0' || c > '9')
+        {
+            is_link_index = false;
+            break;
+        }
+    }
+
+    if (is_link_index)
+    {
+        errno = 0;
+        unsigned long parsed = strtoul(buffer.c_str(), nullptr, 10);
+        size_t index = (errno == ERANGE) ? 0 : (size_t)parsed; // overflow: no such link
+
+        std::string url = pretty.linkUrl(index);
+
+        if (url.empty()) // no such link number, index 0, or links never collected
+        {
+            Debug_printf("PRETTY link query %s -> no such link\r\n", buffer.c_str());
+            receiveBuffer->clear();
+            pretty_link_pending = false;
+            SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+
+        receiveBuffer->clear();
+        *receiveBuffer = url;
+        pretty_link_pending = true;
+
+        Debug_printf("PRETTY link query %s -> %s\r\n", buffer.c_str(), url.c_str());
+        SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    // "!key=value" - an option assignment rather than a section selector.
+    // A CSS selector can never start with '!', so the two cannot collide.
+    PrettyOption opt = pretty.setOption(buffer);
+    if (opt != PrettyOption::NotAnOption)
+    {
+        if (opt == PrettyOption::Invalid)
+        {
+            SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
+        receiveBuffer->clear();
+        pretty_link_pending = false;
+        pretty.rerender();
+        Debug_printf("PRETTY option applied: %s\r\n", buffer.c_str());
+        SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+        SYSTEM_BUS.transaction_success();
+        return;
+    }
+
+    pretty.setQuery(buffer);
+
+    // A re-render replaces the previous section, so drop anything staged from it.
+    receiveBuffer->clear();
+    pretty_link_pending = false;
+    pretty.rerender();
+
+    Debug_printf("PRETTY query set to >%s< (available=%d)\r\n",
+                 buffer.c_str(), (int)pretty.available());
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+    SYSTEM_BUS.transaction_success();
+}
+
+/**
+ * Fetch the page and render it to plain text. Afterwards STATUS reports the
+ * rendered size and READ drains it, so no query step is needed.
+ *
+ * A successful fetch whose query matched nothing (e.g. a CSS selector naming
+ * a section that doesn't exist on the page) also lands here: parse() reports
+ * true, but there is nothing rendered to read.
+ */
+void adamNetwork::pretty_parse()
+{
+    // A re-render replaces the previous page, so drop anything staged from it.
+    receiveBuffer->clear();
+    pretty_link_pending = false; // a new page invalidates any staged link URL
+
+    bool ok = pretty.parse() && pretty.available() > 0;
+    if (protocol != nullptr)
+        protocol->error = ok ? NDEV_STATUS::SUCCESS : NDEV_STATUS::END_OF_FILE;
+
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+
+    if (!ok)
+    {
+        Debug_printf("adamNetwork::pretty_parse() - nothing to render\r\n");
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    Debug_printf("adamNetwork::pretty_parse() - %u bytes at %u columns\r\n",
+                 (unsigned)pretty.available(), pretty.screenWidth());
     SYSTEM_BUS.transaction_success();
 }
 
@@ -471,12 +652,16 @@ void adamNetwork::adamnet_control_send(const FujiAdamPacket &packet)
     case NETCMD_PARSE:
         if (channelMode == CHANNEL_MODE::SGML)
             sgml_parse();
+        else if (channelMode == CHANNEL_MODE::PRETTY)
+            pretty_parse();
         else
             json_parse();
         break;
     case NETCMD_QUERY:
         if (channelMode == CHANNEL_MODE::SGML)
             sgml_query(packet);
+        else if (channelMode == CHANNEL_MODE::PRETTY)
+            pretty_query(packet);
         else
             json_query(packet);
         break;
@@ -530,6 +715,58 @@ std::optional<ByteBuffer> adamNetwork::adamnet_control_receive_channel_sgml()
     return buffer;
 }
 
+/**
+ * Rendered bytes still owed to the computer: what the renderer hasn't handed
+ * over yet, plus what a previous read already staged in receiveBuffer.
+ *
+ * A staged link URL is served to the exclusion of the page, so while one is
+ * pending it alone is what the computer is owed.
+ */
+size_t adamNetwork::pretty_bytes_remaining()
+{
+    if (pretty_link_pending)
+        return receiveBuffer->size();
+
+    return pretty.available() + receiveBuffer->size();
+}
+
+/**
+ * @brief Perform read of the current PRETTY channel
+ *
+ * The renderer holds the whole rendered page, so top receiveBuffer up from it
+ * on demand rather than staging the entire document at parse time.
+ *
+ * While a link URL is staged (pretty_link_pending), receiveBuffer holds only
+ * that URL: it is served as-is, never topped up from the renderer, and the
+ * flag clears once this read drains it, so the page resumes on the next read.
+ */
+std::optional<ByteBuffer> adamNetwork::adamnet_control_receive_channel_pretty()
+{
+    if (pretty_link_pending)
+    {
+        // Serving a staged link URL: never mix rendered page text into it.
+        size_t avail = receiveBuffer->size();
+        if (avail == 0)
+            return std::nullopt;
+
+        size_t len = std::min<size_t>(MAX_ADAM_PACKET_LEN, avail);
+        ByteBuffer buffer(receiveBuffer->begin(), receiveBuffer->begin() + len);
+        receiveBuffer->erase(0, len);
+        if (receiveBuffer->empty())
+            pretty_link_pending = false; // this read drains it; the page resumes after
+        return buffer;
+    }
+
+    size_t avail = pretty.available();
+    if (avail == 0)
+        return std::nullopt;
+
+    size_t len = std::min<size_t>(MAX_ADAM_PACKET_LEN, avail);
+    ByteBuffer buffer(len);
+    pretty.readValue(buffer.data(), buffer.size());
+    return buffer;
+}
+
 std::optional<ByteBuffer> adamNetwork::adamnet_control_receive_channel_protocol()
 {
     NetworkStatus ns;
@@ -571,6 +808,9 @@ inline void adamNetwork::adamnet_control_receive()
         break;
     case CHANNEL_MODE::SGML:
         buffer = adamnet_control_receive_channel_sgml();
+        break;
+    case CHANNEL_MODE::PRETTY:
+        buffer = adamnet_control_receive_channel_pretty();
         break;
     case CHANNEL_MODE::PROTOCOL:
         buffer = adamnet_control_receive_channel_protocol();

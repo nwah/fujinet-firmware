@@ -13,6 +13,7 @@
 
 #include "fnjson.h"
 #include "fnsgml.h"
+#include "fnpretty.h"
 
 /**
  * Number of devices to expose via ADAM, becomes 0x71 to 0x70 + NUM_DEVICES - 1
@@ -85,6 +86,7 @@ public:
     AdamNetStatus deviceStatus() override;
     std::optional<ByteBuffer> adamnet_control_receive_channel_json();
     std::optional<ByteBuffer> adamnet_control_receive_channel_sgml();
+    std::optional<ByteBuffer> adamnet_control_receive_channel_pretty();
     std::optional<ByteBuffer> adamnet_control_receive_channel_protocol();
 
     /**
@@ -135,6 +137,17 @@ public:
     void sgml_query(const FujiAdamPacket &packet);
 
     /**
+     * @brief Fetch and render a document to plain text. (must be in PRETTY channelMode)
+     */
+    void pretty_parse();
+
+    /**
+     * @brief Set PRETTY CSS selector query string, or (an all-digits payload)
+     * look up a collected link's URL by 1-based index. (must be in PRETTY channelMode)
+     */
+    void pretty_query(const FujiAdamPacket &packet);
+
+    /**
      * Check to see if PROCEED needs to be asserted.
      */
     void adamnet_poll_interrupt();
@@ -158,6 +171,19 @@ private:
      * SGML Object (HTML/XML via CSS selector)
      */
     FNSGML sgml;
+
+    /**
+     * The pretty renderer object (document rendered to plain text)
+     */
+    FNPretty pretty;
+
+    /**
+     * True while receiveBuffer holds a link URL staged by a numeric PRETTY
+     * query rather than rendered page text. STATUS/READ serve the URL to
+     * the exclusion of the document while it is set, so looking a link up
+     * does not disturb the client's position in the page.
+     */
+    bool pretty_link_pending = false;
 
     /**
      * The Receive buffer for this N: device
@@ -291,6 +317,14 @@ private:
      * @return FUJI_ERROR::UNSPECIFIED on error, FUJI_ERROR::NONE on success. Used to emit adamnet_error or adamnet_complete().
      */
     fujiError_t adamnet_write_channel(unsigned short num_bytes);
+
+    /**
+     * Rendered bytes still owed to the computer: what the renderer hasn't
+     * handed over yet, plus what a previous read already staged in
+     * receiveBuffer. A staged link URL is served to the exclusion of the
+     * page, so while one is pending it alone is what the computer is owed.
+     */
+    size_t pretty_bytes_remaining();
 
     /**
      * Called to pulse the PROCEED interrupt, rate limited by the interrupt timer.

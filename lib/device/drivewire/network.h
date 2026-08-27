@@ -13,6 +13,7 @@
 #include "status_error_codes.h"
 #include "fnjson.h"
 #include "fnsgml.h"
+#include "fnpretty.h"
 
 /**
  * Number of devices to expose via DRIVEWIRE, becomes 0x71 to 0x70 + NUM_DEVICES - 1
@@ -90,8 +91,10 @@ public:
 
     /**
      * @brief set channel mode, JSON or PROTOCOL
+     * @param width screen width in columns for PRETTY (0 keeps the current width);
+     * ignored for the other modes.
      */
-    void set_channel_mode(uint8_t mode);
+    void set_channel_mode(uint8_t mode, uint8_t width = 0);
 
     /**
      * @brief Called to set prefix
@@ -172,12 +175,16 @@ private:
      *
      * @enum PROTOCOL Send to protocol
      * @enum JSON Send to JSON parser.
+     * @enum SGML Send to SGML/HTML/XML parser.
+     * @enum PRETTY Send to the pretty renderer (document as formatted plain text).
      */
     enum _channel_mode
     {
-        PROTOCOL,
-        JSON,
-        SGML
+        PROTOCOL = 0,
+        JSON     = 1,
+        SGML     = 2,
+        // 3 is reserved for the XML/XPath channel; do not reuse it.
+        PRETTY   = 4
     } channelMode;
 
     /**
@@ -206,6 +213,21 @@ private:
      * Bytes remaining of current SGML query result.
      */
     unsigned short sgml_bytes_remaining = 0;
+
+    /**
+     * The pretty renderer object (document rendered to plain text). drivewire
+     * has no NETCMD_SET_PARAMETERS command (not even for JSON), so there is
+     * no way to turn on link rendering for this bus; it stays off.
+     */
+    FNPretty *pretty = nullptr;
+
+    /**
+     * True while receiveBuffer holds a link URL staged by a numeric PRETTY query
+     * rather than rendered page text. STATUS/READ serve the URL to the exclusion
+     * of the document while it is set, so looking a link up does not disturb the
+     * client's position in the document.
+     */
+    bool pretty_link_pending = false;
 
     uint32_t readAck = 0;
 
@@ -250,6 +272,12 @@ private:
     fujiError_t read_channel_sgml(unsigned short num_bytes);
 
     /**
+     * @brief Perform read of the current PRETTY channel
+     * @param num_bytes Number of bytes to read
+     */
+    fujiError_t read_channel_pretty(unsigned short num_bytes);
+
+    /**
      * Perform the correct write based on value of channelMode
      * @param num_bytes Number of bytes to write.
      * @return FUJI_ERROR::UNSPECIFIED on error, FUJI_ERROR::NONE on success. Used to emit drivewire_error or drivewire_complete().
@@ -278,6 +306,17 @@ private:
     bool status_channel_sgml(NetworkStatus *ns);
 
     /**
+     * @brief get PRETTY status (# of bytes of rendered text left to read)
+     */
+    bool status_channel_pretty(NetworkStatus *ns);
+
+    /**
+     * @brief Bytes of rendered text still to be handed to the computer,
+     * counting what's already staged in receiveBuffer.
+     */
+    size_t pretty_bytes_remaining();
+
+    /**
      * @brief Parse incoming JSON. (must be in JSON channelMode)
      */
     void parse_json();
@@ -296,6 +335,17 @@ private:
      * @brief Set SGML CSS selector query std::string. (must be in SGML channelMode)
      */
     void sgml_query();
+
+    /**
+     * @brief Fetch and render a document to plain text. (must be in PRETTY channelMode)
+     */
+    void parse_pretty();
+
+    /**
+     * @brief Set PRETTY CSS selector query string, or (an all-digits payload)
+     * look up a collected link's URL by 1-based index. (must be in PRETTY channelMode)
+     */
+    void pretty_query();
 
     /**
      * @brief parse URL and instantiate protocol
