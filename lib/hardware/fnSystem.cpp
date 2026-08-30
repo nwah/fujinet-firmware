@@ -80,6 +80,10 @@
     #define TARGET_PLATFORM_NAME "LYNX"
 #elif defined(BUILD_S100)
     #define TARGET_PLATFORM_NAME "S100"
+#elif defined(BUILD_MSX)
+    // Checked before BUILD_RS232: an MSX build defines both (it is an
+    // RS232/fujibus host), and this is the more specific of the two.
+    #define TARGET_PLATFORM_NAME "MSX"
 #elif defined(BUILD_RS232)
     #define TARGET_PLATFORM_NAME "RS232"
 #elif defined(BUILD_CX16)

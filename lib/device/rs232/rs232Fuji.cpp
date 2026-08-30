@@ -10,7 +10,18 @@
 #include "compat_string.h"
 #include "fuji_endian.h"
 
+// What insert_boot_device() appends to "/autorun" (and friends) when it goes
+// looking for the boot image in flash. An MSX boots a cartridge, not a disk
+// image, and ".rom" is what MediaType::discover_mediatype() maps to
+// MEDIATYPE_ROM -- which is what routes the boot image through MediaTypeROM
+// and into the adapter's user ROM. That is the whole mechanism by which the
+// bootstrap ROM gets CONFIG: no new command, just the boot image the FujiNet
+// already knows how to serve, in the shape an MSX can boot.
+#ifdef BUILD_MSX
+#define IMAGE_EXTENSION ".rom"
+#else
 #define IMAGE_EXTENSION ".img"
+#endif
 #define LOBBY_URL       "tnfs://tnfs.fujinet.online/MSDOS/lobby.img"
 
 #ifndef ESP_PLATFORM // why ESP does not like it? it throws a linker error undefined reference to 'basename'
