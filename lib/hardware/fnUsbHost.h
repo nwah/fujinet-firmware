@@ -11,9 +11,12 @@
 // before the bus ever starts). Whichever runs first installs; the other gets
 // a no-op and a "someone beat me to it" answer.
 //
-// Boards with neither USB-host feature compile this file to nothing.
+// VisorChannel (a Handspring Visor in its USB cradle) uses it the same way.
+//
+// Boards with no USB-host feature compile this file to nothing.
 
-#if defined(CONFIG_USB_CDC_ACM_HOST_ENABLED) || defined(CONFIG_USB_PICOBOOT_HOST_ENABLED)
+#if defined(CONFIG_USB_CDC_ACM_HOST_ENABLED) || defined(CONFIG_USB_PICOBOOT_HOST_ENABLED) || \
+    defined(CONFIG_USB_VISOR_HOST_ENABLED)
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -54,6 +57,6 @@ bool usbHostEnsureInstalled(UBaseType_t event_task_priority);
 // handle to a device on the port.
 void usbHostRecycleRootPort();
 
-#endif // CONFIG_USB_CDC_ACM_HOST_ENABLED || CONFIG_USB_PICOBOOT_HOST_ENABLED
+#endif // CONFIG_USB_CDC_ACM_HOST_ENABLED || CONFIG_USB_PICOBOOT_HOST_ENABLED || CONFIG_USB_VISOR_HOST_ENABLED
 
 #endif // FNUSBHOST_H
