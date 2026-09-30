@@ -1,7 +1,7 @@
 #include "fnUsbHost.h"
 
 #if defined(CONFIG_USB_CDC_ACM_HOST_ENABLED) || defined(CONFIG_USB_PICOBOOT_HOST_ENABLED) || \
-    defined(CONFIG_USB_VISOR_HOST_ENABLED)
+    defined(CONFIG_USB_PALM_HOST_ENABLED)
 
 #include <usb/usb_host.h>
 #include <esp_err.h>
@@ -84,4 +84,4 @@ void usbHostRecycleRootPort()
     Debug_printv("USB: root port recycled, awaiting re-enumeration");
 }
 
-#endif // CONFIG_USB_CDC_ACM_HOST_ENABLED || CONFIG_USB_PICOBOOT_HOST_ENABLED || CONFIG_USB_VISOR_HOST_ENABLED
+#endif // CONFIG_USB_CDC_ACM_HOST_ENABLED || CONFIG_USB_PICOBOOT_HOST_ENABLED || CONFIG_USB_PALM_HOST_ENABLED

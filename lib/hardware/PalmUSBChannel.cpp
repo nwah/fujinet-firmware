@@ -1,6 +1,6 @@
 #include "PalmUSBChannel.h"
 
-#ifdef CONFIG_USB_VISOR_HOST_ENABLED
+#ifdef CONFIG_USB_PALM_HOST_ENABLED
 
 #include <algorithm>
 #include <string.h>
@@ -31,7 +31,7 @@ typedef struct {
     usb_host_client_event_t type;
     uint8_t address;
     usb_device_handle_t dev;
-} VisorEvent;
+} PalmUSBEvent;
 
 /*-----------------------------------------------------------------------
   Callbacks: all run on the client task, inside usb_host_client_handle_events
@@ -67,7 +67,7 @@ void PalmUSBChannel::clientEvent(const usb_host_client_event_msg_t *event)
 {
     // Opening a device needs control transfers, whose completions are
     // delivered on this very task -- so hand the work to the worker task.
-    VisorEvent ev = {};
+    PalmUSBEvent ev = {};
     ev.type = event->event;
     if (event->event == USB_HOST_CLIENT_EVENT_NEW_DEV)
         ev.address = event->new_dev.address;
@@ -86,17 +86,17 @@ void PalmUSBChannel::inDone(usb_transfer_t *transfer)
             pkt.length = std::min((size_t)transfer->actual_num_bytes, (size_t)MAX_FIFO_PAYLOAD);
             memcpy(pkt.data, transfer->data_buffer, pkt.length);
             if (xQueueSend(_rxQueue, &pkt, 0) != pdTRUE)
-                Debug_printv("Visor: receive queue full, %u bytes dropped", (unsigned)pkt.length);
+                Debug_printv("PalmUSB: receive queue full, %u bytes dropped", (unsigned)pkt.length);
         }
         // Keep the endpoint polled: one packet per transfer, so every packet
-        // completes even though the Visor sends no zero-length packets
+        // completes even though the Palm sends no zero-length packets
         if (_connected && usb_host_transfer_submit(transfer) == ESP_OK)
             return;
     }
     else if (transfer->status != USB_TRANSFER_STATUS_NO_DEVICE &&
              transfer->status != USB_TRANSFER_STATUS_CANCELED)
     {
-        Debug_printv("Visor: IN transfer failed, status %d", transfer->status);
+        Debug_printv("PalmUSB: IN transfer failed, status %d", transfer->status);
     }
     _inFlight--;
 }
@@ -118,7 +118,7 @@ static void clientTaskForwarder(void *arg)
 
 void PalmUSBChannel::workerTask()
 {
-    VisorEvent ev;
+    PalmUSBEvent ev;
 
     while (true)
     {
@@ -130,7 +130,7 @@ void PalmUSBChannel::workerTask()
         }
         else if (ev.dev == _dev)
         {
-            Debug_printv("Visor: disconnected");
+            Debug_printv("PalmUSB: disconnected");
             closeDevice();
         }
     }
@@ -199,7 +199,7 @@ bool PalmUSBChannel::findEndpoints(const usb_config_desc_t *config)
 }
 
 // Send a vendor IN request to an endpoint and wait for it; the answer is
-// not needed, only that the Visor has been asked
+// not needed, only that the Palm has been asked
 bool PalmUSBChannel::vendorRequestIn(uint8_t request, uint16_t index, uint16_t length)
 {
     usb_setup_packet_t *setup = (usb_setup_packet_t *)_ctrl->data_buffer;
@@ -236,21 +236,21 @@ void PalmUSBChannel::openDevice(uint8_t address)
     if ((_expected_vid && desc->idVendor != _expected_vid) ||
         (_expected_pid && desc->idProduct != _expected_pid))
     {
-        Debug_printv("Visor: ignoring USB device %04X:%04X", desc->idVendor, desc->idProduct);
+        Debug_printv("PalmUSB: ignoring USB device %04X:%04X", desc->idVendor, desc->idProduct);
         usb_host_device_close(_client, dev);
         return;
     }
 
     if (usb_host_get_active_config_descriptor(dev, &config) != ESP_OK || !findEndpoints(config))
     {
-        Debug_printv("Visor: no bulk endpoint pair on %04X:%04X", desc->idVendor, desc->idProduct);
+        Debug_printv("PalmUSB: no bulk endpoint pair on %04X:%04X", desc->idVendor, desc->idProduct);
         usb_host_device_close(_client, dev);
         return;
     }
 
     if (usb_host_interface_claim(_client, dev, _interface, 0) != ESP_OK)
     {
-        Debug_printv("Visor: could not claim interface %u", _interface);
+        Debug_printv("PalmUSB: could not claim interface %u", _interface);
         usb_host_device_close(_client, dev);
         return;
     }
@@ -262,7 +262,7 @@ void PalmUSBChannel::openDevice(uint8_t address)
     bool avail = vendorRequestIn(VISOR_REQUEST_BYTES_AVAILABLE, _outEp & 0x0F, 2);
 
     _connected = true;
-    for (int i = 0; i < VISOR_IN_TRANSFERS; i++)
+    for (int i = 0; i < PALMUSB_IN_TRANSFERS; i++)
     {
         _in[i]->device_handle = _dev;
         _in[i]->bEndpointAddress = _inEp;
@@ -273,7 +273,7 @@ void PalmUSBChannel::openDevice(uint8_t address)
             _inFlight++;
     }
 
-    Debug_printv("Visor: connected %04X:%04X, bulk IN 0x%02X (%u) OUT 0x%02X, info %s/%s",
+    Debug_printv("PalmUSB: connected %04X:%04X, bulk IN 0x%02X (%u) OUT 0x%02X, info %s/%s",
                  desc->idVendor, desc->idProduct, _inEp, _inMps, _outEp,
                  info ? "ok" : "no", avail ? "ok" : "no");
 }
@@ -292,7 +292,7 @@ void PalmUSBChannel::closeDevice()
     for (int i = 0; i < 50 && (_inFlight > 0 || _outPending); i++)
         vTaskDelay(pdMS_TO_TICKS(10));
     if (_inFlight > 0 || _outPending)
-        Debug_printv("Visor: %d transfers still pending at close", (int)_inFlight);
+        Debug_printv("PalmUSB: %d transfers still pending at close", (int)_inFlight);
 
     usb_host_interface_release(_client, _dev, _interface);
     usb_host_device_close(_client, _dev);
@@ -305,18 +305,18 @@ void PalmUSBChannel::closeDevice()
 
 void PalmUSBChannel::begin()
 {
-    _events = xQueueCreate(8, sizeof(VisorEvent));
+    _events = xQueueCreate(8, sizeof(PalmUSBEvent));
     _rxQueue = xQueueCreate(2048 / MAX_FIFO_PAYLOAD, sizeof(FIFOPacket));
     _ctrlDone = xSemaphoreCreateBinary();
     _outDone = xSemaphoreCreateBinary();
     if (!_events || !_rxQueue || !_ctrlDone || !_outDone)
     {
-        Debug_printv("could not create Visor queues, free internal/total heap: %lu/%lu",
+        Debug_printv("could not create PalmUSB queues, free internal/total heap: %lu/%lu",
                      esp_get_free_internal_heap_size(), esp_get_free_heap_size());
         abort();
     }
 
-    for (int i = 0; i < VISOR_IN_TRANSFERS; i++)
+    for (int i = 0; i < PALMUSB_IN_TRANSFERS; i++)
         ESP_ERROR_CHECK(usb_host_transfer_alloc(MAX_FIFO_PAYLOAD, 0, &_in[i]));
     ESP_ERROR_CHECK(usb_host_transfer_alloc(OUT_BUFFER_SIZE, 0, &_out));
     ESP_ERROR_CHECK(usb_host_transfer_alloc(64, 0, &_ctrl));
@@ -330,10 +330,10 @@ void PalmUSBChannel::begin()
     client_config.async.callback_arg = this;
     ESP_ERROR_CHECK(usb_host_client_register(&client_config, &_client));
 
-    if (xTaskCreate(clientTaskForwarder, "Visor-client", 4096, this, _service_priority, NULL) != pdTRUE ||
-        xTaskCreate(workerTaskForwarder, "Visor-worker", 4096, this, _service_priority, NULL) != pdTRUE)
+    if (xTaskCreate(clientTaskForwarder, "PalmUSB-client", 4096, this, _service_priority, NULL) != pdTRUE ||
+        xTaskCreate(workerTaskForwarder, "PalmUSB-worker", 4096, this, _service_priority, NULL) != pdTRUE)
     {
-        Debug_printv("could not create Visor USB tasks");
+        Debug_printv("could not create PalmUSB tasks");
         abort();
     }
 
@@ -342,7 +342,7 @@ void PalmUSBChannel::begin()
     if (host_was_already_up)
         usbHostRecycleRootPort();
 
-    Debug_printv("Visor: waiting for a Palm app to open the USB Library");
+    Debug_printv("PalmUSB: waiting for a Palm app to open the USB Library");
 }
 
 void PalmUSBChannel::end()
@@ -356,9 +356,9 @@ void PalmUSBChannel::setServicePriority(UBaseType_t priority)
     TaskHandle_t h;
     if ((h = xTaskGetHandle("usb_lib")) != NULL)
         vTaskPrioritySet(h, priority);
-    if ((h = xTaskGetHandle("Visor-client")) != NULL)
+    if ((h = xTaskGetHandle("PalmUSB-client")) != NULL)
         vTaskPrioritySet(h, priority);
-    if ((h = xTaskGetHandle("Visor-worker")) != NULL)
+    if ((h = xTaskGetHandle("PalmUSB-worker")) != NULL)
         vTaskPrioritySet(h, priority);
 }
 
@@ -382,7 +382,7 @@ size_t PalmUSBChannel::dataOut(const void *buffer, size_t length)
 
     while (sent < length)
     {
-        // Link down, or the Visor stopped taking data: drop the rest
+        // Link down, or the Palm stopped taking data: drop the rest
         if (!_connected || _outPending)
             return sent;
 
@@ -405,7 +405,7 @@ size_t PalmUSBChannel::dataOut(const void *buffer, size_t length)
         {
             // Still queued: outDone() clears _outPending when it completes
             // or is flushed at close; until then writes are dropped
-            Debug_printv("Visor: write timed out");
+            Debug_printv("PalmUSB: write timed out");
             return sent;
         }
         if (_out->status != USB_TRANSFER_STATUS_COMPLETED)
@@ -415,4 +415,4 @@ size_t PalmUSBChannel::dataOut(const void *buffer, size_t length)
     return sent;
 }
 
-#endif /* CONFIG_USB_VISOR_HOST_ENABLED */
+#endif /* CONFIG_USB_PALM_HOST_ENABLED */
