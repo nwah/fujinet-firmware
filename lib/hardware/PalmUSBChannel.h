@@ -1,17 +1,18 @@
 #ifndef PALMUSBCHANNEL_H
 #define PALMUSBCHANNEL_H
 
-#ifdef CONFIG_USB_VISOR_HOST_ENABLED
+#ifdef CONFIG_USB_PALM_HOST_ENABLED
 
-// FujiBus to a Handspring Visor in its USB cradle, with the ESP32-S3 as the
-// USB host (the Visor's end is its "USB Library", used with the Ser* API).
+// FujiBus to a Palm handheld in its USB cradle (developed on a Handspring
+// Visor), with the ESP32-S3 as the USB host (the Palm's end is its "USB
+// Library", used with the Ser* API).
 //
-// The Visor is a vendor-class device, not CDC-ACM: after an optional
+// The Palm is a vendor-class device, not CDC-ACM: after an optional
 // Handspring connection-info handshake it is a raw byte stream on a pair of
 // bulk endpoints. It only enumerates while a Palm app has the USB Library
 // open, and drops off the bus when the app closes it, so unlike ACMChannel
 // begin() does not wait for a device: the channel is simply down (writes
-// are dropped, nothing arrives) until the Visor shows up.
+// are dropped, nothing arrives) until the Palm shows up.
 
 #include "IOChannel.h"
 #include "RS232ChannelProtocol.h"
@@ -23,7 +24,7 @@
 #include <freertos/semphr.h>
 #include <usb/usb_host.h>
 
-#define VISOR_IN_TRANSFERS 4
+#define PALMUSB_IN_TRANSFERS 4
 
 class PalmUSBChannel : public IOChannel, public RS232ChannelProtocol
 {
@@ -40,12 +41,12 @@ private:
     std::atomic<int> _inFlight{0};
     std::atomic<bool> _outPending{false};
 
-    usb_transfer_t *_in[VISOR_IN_TRANSFERS] = {};
+    usb_transfer_t *_in[PALMUSB_IN_TRANSFERS] = {};
     usb_transfer_t *_out = nullptr;
     usb_transfer_t *_ctrl = nullptr;
 
     // Which bulk endpoint pair carries the data. With the USB Library open
-    // the Visor reports two generic ports; port 1 is the one the Palm side
+    // the Palm reports two generic ports; port 1 is the one the Palm side
     // of FujiNet uses (see fujinet-palm tools/visorbridge.js).
     uint8_t _endpointNumber = 1;
 
@@ -97,6 +98,6 @@ public:
     void workerTask();
 };
 
-#endif /* CONFIG_USB_VISOR_HOST_ENABLED */
+#endif /* CONFIG_USB_PALM_HOST_ENABLED */
 
 #endif /* PALMUSBCHANNEL_H */
