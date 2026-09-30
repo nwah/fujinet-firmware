@@ -1,5 +1,5 @@
-#ifndef VISORCHANNEL_H
-#define VISORCHANNEL_H
+#ifndef PALMUSBCHANNEL_H
+#define PALMUSBCHANNEL_H
 
 #ifdef CONFIG_USB_VISOR_HOST_ENABLED
 
@@ -25,7 +25,7 @@
 
 #define VISOR_IN_TRANSFERS 4
 
-class VisorChannel : public IOChannel, public RS232ChannelProtocol
+class PalmUSBChannel : public IOChannel, public RS232ChannelProtocol
 {
 private:
     usb_host_client_handle_t _client = nullptr;
@@ -99,4 +99,4 @@ public:
 
 #endif /* CONFIG_USB_VISOR_HOST_ENABLED */
 
-#endif /* VISORCHANNEL_H */
+#endif /* PALMUSBCHANNEL_H */

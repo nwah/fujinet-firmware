@@ -4,7 +4,7 @@
 #include "bus.h"
 #include "UARTChannel.h"
 #include "ACMChannel.h"
-#include "VisorChannel.h"
+#include "PalmUSBChannel.h"
 #include "FujiBusPacket.h"
 #include "BoIPChannel.h"
 #include "global_types.h"
@@ -126,7 +126,7 @@ private:
 
     IOChannel *_port;
 #if FUJINET_OVER_USB && defined(CONFIG_USB_VISOR_HOST_ENABLED)
-    VisorChannel _serial;               // Handspring Visor cradle as the USB device
+    PalmUSBChannel _serial;           // Handspring Visor cradle as the USB device
     bool _usb_boot_priority = false;  // boosted until WiFi connects
 #elif FUJINET_OVER_USB
     ACMChannel _serial;

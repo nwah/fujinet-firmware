@@ -1,4 +1,4 @@
-#include "VisorChannel.h"
+#include "PalmUSBChannel.h"
 
 #ifdef CONFIG_USB_VISOR_HOST_ENABLED
 
@@ -39,12 +39,12 @@ typedef struct {
 
 static void clientEventForwarder(const usb_host_client_event_msg_t *event, void *arg)
 {
-    ((VisorChannel *)arg)->clientEvent(event);
+    ((PalmUSBChannel *)arg)->clientEvent(event);
 }
 
 static void inForwarder(usb_transfer_t *transfer)
 {
-    ((VisorChannel *)transfer->context)->inDone(transfer);
+    ((PalmUSBChannel *)transfer->context)->inDone(transfer);
 }
 
 static void semaphoreGiver(usb_transfer_t *transfer)
@@ -54,16 +54,16 @@ static void semaphoreGiver(usb_transfer_t *transfer)
 
 static void outForwarder(usb_transfer_t *transfer)
 {
-    ((VisorChannel *)transfer->context)->outDone(transfer);
+    ((PalmUSBChannel *)transfer->context)->outDone(transfer);
 }
 
-void VisorChannel::outDone(usb_transfer_t *transfer)
+void PalmUSBChannel::outDone(usb_transfer_t *transfer)
 {
     _outPending = false;
     xSemaphoreGive(_outDone);
 }
 
-void VisorChannel::clientEvent(const usb_host_client_event_msg_t *event)
+void PalmUSBChannel::clientEvent(const usb_host_client_event_msg_t *event)
 {
     // Opening a device needs control transfers, whose completions are
     // delivered on this very task -- so hand the work to the worker task.
@@ -76,7 +76,7 @@ void VisorChannel::clientEvent(const usb_host_client_event_msg_t *event)
     xQueueSend(_events, &ev, 0);
 }
 
-void VisorChannel::inDone(usb_transfer_t *transfer)
+void PalmUSBChannel::inDone(usb_transfer_t *transfer)
 {
     if (transfer->status == USB_TRANSFER_STATUS_COMPLETED)
     {
@@ -105,7 +105,7 @@ void VisorChannel::inDone(usb_transfer_t *transfer)
   Tasks
 -----------------------------------------------------------------------*/
 
-void VisorChannel::clientTask()
+void PalmUSBChannel::clientTask()
 {
     while (true)
         usb_host_client_handle_events(_client, portMAX_DELAY);
@@ -113,10 +113,10 @@ void VisorChannel::clientTask()
 
 static void clientTaskForwarder(void *arg)
 {
-    ((VisorChannel *)arg)->clientTask();
+    ((PalmUSBChannel *)arg)->clientTask();
 }
 
-void VisorChannel::workerTask()
+void PalmUSBChannel::workerTask()
 {
     VisorEvent ev;
 
@@ -138,14 +138,14 @@ void VisorChannel::workerTask()
 
 static void workerTaskForwarder(void *arg)
 {
-    ((VisorChannel *)arg)->workerTask();
+    ((PalmUSBChannel *)arg)->workerTask();
 }
 
 /*-----------------------------------------------------------------------
   Device
 -----------------------------------------------------------------------*/
 
-bool VisorChannel::findEndpoints(const usb_config_desc_t *config)
+bool PalmUSBChannel::findEndpoints(const usb_config_desc_t *config)
 {
     int offset = 0;
     const usb_intf_desc_t *intf = usb_parse_interface_descriptor(config, 0, 0, &offset);
@@ -200,7 +200,7 @@ bool VisorChannel::findEndpoints(const usb_config_desc_t *config)
 
 // Send a vendor IN request to an endpoint and wait for it; the answer is
 // not needed, only that the Visor has been asked
-bool VisorChannel::vendorRequestIn(uint8_t request, uint16_t index, uint16_t length)
+bool PalmUSBChannel::vendorRequestIn(uint8_t request, uint16_t index, uint16_t length)
 {
     usb_setup_packet_t *setup = (usb_setup_packet_t *)_ctrl->data_buffer;
 
@@ -223,7 +223,7 @@ bool VisorChannel::vendorRequestIn(uint8_t request, uint16_t index, uint16_t len
     return _ctrl->status == USB_TRANSFER_STATUS_COMPLETED;
 }
 
-void VisorChannel::openDevice(uint8_t address)
+void PalmUSBChannel::openDevice(uint8_t address)
 {
     usb_device_handle_t dev;
     const usb_device_desc_t *desc;
@@ -278,7 +278,7 @@ void VisorChannel::openDevice(uint8_t address)
                  info ? "ok" : "no", avail ? "ok" : "no");
 }
 
-void VisorChannel::closeDevice()
+void PalmUSBChannel::closeDevice()
 {
     _connected = false;
     if (!_dev)
@@ -303,7 +303,7 @@ void VisorChannel::closeDevice()
   Channel
 -----------------------------------------------------------------------*/
 
-void VisorChannel::begin()
+void PalmUSBChannel::begin()
 {
     _events = xQueueCreate(8, sizeof(VisorEvent));
     _rxQueue = xQueueCreate(2048 / MAX_FIFO_PAYLOAD, sizeof(FIFOPacket));
@@ -345,11 +345,11 @@ void VisorChannel::begin()
     Debug_printv("Visor: waiting for a Palm app to open the USB Library");
 }
 
-void VisorChannel::end()
+void PalmUSBChannel::end()
 {
 }
 
-void VisorChannel::setServicePriority(UBaseType_t priority)
+void PalmUSBChannel::setServicePriority(UBaseType_t priority)
 {
     _service_priority = priority;
 
@@ -362,7 +362,7 @@ void VisorChannel::setServicePriority(UBaseType_t priority)
         vTaskPrioritySet(h, priority);
 }
 
-void VisorChannel::updateFIFO()
+void PalmUSBChannel::updateFIFO()
 {
     FIFOPacket pkt;
     size_t old_len;
@@ -375,7 +375,7 @@ void VisorChannel::updateFIFO()
     }
 }
 
-size_t VisorChannel::dataOut(const void *buffer, size_t length)
+size_t PalmUSBChannel::dataOut(const void *buffer, size_t length)
 {
     const uint8_t *p = (const uint8_t *)buffer;
     size_t sent = 0, n;

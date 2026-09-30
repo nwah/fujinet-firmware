@@ -11,7 +11,7 @@
 // before the bus ever starts). Whichever runs first installs; the other gets
 // a no-op and a "someone beat me to it" answer.
 //
-// VisorChannel (a Handspring Visor in its USB cradle) uses it the same way.
+// PalmUSBChannel (a Handspring Visor in its USB cradle) uses it the same way.
 //
 // Boards with no USB-host feature compile this file to nothing.
 
