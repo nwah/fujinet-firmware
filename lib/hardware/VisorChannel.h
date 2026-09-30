@@ -46,7 +46,7 @@ private:
 
     // Which bulk endpoint pair carries the data. With the USB Library open
     // the Visor reports two generic ports; port 1 is the one the Palm side
-    // of FujiNet uses (see palmos-rs232 tools/visorbridge.js).
+    // of FujiNet uses (see fujinet-palm tools/visorbridge.js).
     uint8_t _endpointNumber = 1;
 
     uint16_t _expected_vid = 0x082D, _expected_pid = 0x0100;
