@@ -548,3 +548,34 @@ if(UNIX)
       $<TARGET_FILE:mg_http_completion_probe>)
   set_tests_properties(mg_http_completion_tests PROPERTIES TIMEOUT 25)
 endif()
+
+# ------------------------------------------------------------------------------
+# Palm OS HotSync server. The protocol stack and sync session are free of
+# FujiNet globals, so they are driven here with captured frames and a fake
+# device.
+# ------------------------------------------------------------------------------
+add_executable(hotsync_tests
+    HotSyncTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/Slp.cpp
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/PadpTransport.cpp
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/NetSyncTransport.cpp
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/Dlp.cpp
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/DlpClient.cpp
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/PalmDatabase.cpp
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/HotSyncSession.cpp
+)
+
+target_include_directories(hotsync_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+target_compile_definitions(hotsync_tests PRIVATE UNIT_TESTS)
+
+if(WIN32)
+    target_link_libraries(hotsync_tests PRIVATE ws2_32)
+endif()
+
+add_test(NAME hotsync_tests COMMAND hotsync_tests)
