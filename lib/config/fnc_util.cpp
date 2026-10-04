@@ -125,6 +125,10 @@ fnConfig::section_match fnConfig::_find_section_in_line(std::string &line, int &
             {
                 return SECTION_BOIP;
             }
+            else if (strncasecmp("HotSync", s1.c_str(), 7) == 0)
+            {
+                return SECTION_HOTSYNC;
+            }
             else if (strncasecmp("GoogleDrive", s1.c_str(), 11) == 0)
             {
                 return SECTION_GOOGLEDRIVE;

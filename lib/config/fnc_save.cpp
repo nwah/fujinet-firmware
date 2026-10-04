@@ -206,6 +206,15 @@ void fnConfig::save()
         ss << "port=" << LINETERM;
     }
 
+    // HotSync
+    ss << LINETERM << "[HotSync]" << LINETERM;
+    ss << "enabled=" << _hotsync.enabled << LINETERM;
+    ss << "user=" << _hotsync.user << LINETERM;
+    ss << "backup=" << _hotsync.backup << LINETERM;
+    ss << "netsync_port=" << _hotsync.netsync_port << LINETERM;
+    ss << "emulator_port=" << _hotsync.emulator_port << LINETERM;
+    ss << "serial_port=" << _hotsync.serial_port << LINETERM;
+
 #ifndef ESP_PLATFORM
     // SERIAL
     ss << LINETERM << "[Serial]" << LINETERM;

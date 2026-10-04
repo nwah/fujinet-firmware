@@ -321,6 +321,17 @@ public:
     void store_boip_host(const char *host);
     void store_boip_port(int port);
 
+    // HotSync server for Palm OS devices
+    bool get_hotsync_enabled() { return _hotsync.enabled; }
+    std::string get_hotsync_user() { return _hotsync.user; }
+    std::string get_hotsync_backup() { return _hotsync.backup; }
+    int get_hotsync_netsync_port() { return _hotsync.netsync_port; }
+    int get_hotsync_emulator_port() { return _hotsync.emulator_port; }
+    std::string get_hotsync_serial_port() { return _hotsync.serial_port; }
+    void store_hotsync_enabled(bool enabled);
+    void store_hotsync_user(const std::string &user);
+    void store_hotsync_backup(const std::string &backup);
+
     void load();
     void save();
 
@@ -348,6 +359,7 @@ private:
     void _read_section_cpm(std::stringstream &ss);
     void _read_section_device_enable(std::stringstream &ss);
     void _read_section_boip(std::stringstream &ss);
+    void _read_section_hotsync(std::stringstream &ss);
     void _read_section_gdrive(std::stringstream &ss);
     void _read_section_s3(std::stringstream &ss);
     void _read_section_onedrive(std::stringstream &ss);
@@ -372,6 +384,7 @@ private:
         SECTION_CPM,
         SECTION_DEVICE_ENABLE,
         SECTION_BOIP,
+        SECTION_HOTSYNC,
         SECTION_GOOGLEDRIVE,
         SECTION_S3,
         SECTION_ONEDRIVE,
@@ -513,6 +526,18 @@ private:
         int port = CONFIG_DEFAULT_BOIP_PORT;
     };
 
+    struct hotsync_info
+    {
+        bool enabled = false;
+        std::string user = "FujiNet";
+        // none, flagged (databases with the backup bit) or all
+        std::string backup = "flagged";
+        int netsync_port = 14238;
+        int emulator_port = 6416;
+        // Cradle serial device, a host path on FujiNet-PC
+        std::string serial_port;
+    };
+
 #if defined(BUILD_RS232) || !defined(ESP_PLATFORM)
     struct serial_info
     {
@@ -608,6 +633,7 @@ private:
     modem_info _modem;
     cassette_info _cassette;
     boip_info _boip;
+    hotsync_info _hotsync;
 #if defined(BUILD_RS232) || !defined(ESP_PLATFORM)
     serial_info _serial;
 #endif /* BUILD_RS232 || ! ESP_PLATFORM */

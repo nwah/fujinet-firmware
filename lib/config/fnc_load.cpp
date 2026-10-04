@@ -193,6 +193,9 @@ New behavior: copy from SD first if available, then read FLASH.
         case SECTION_BOIP:
             _read_section_boip(ss);
             break;
+        case SECTION_HOTSYNC:
+            _read_section_hotsync(ss);
+            break;
         case SECTION_GOOGLEDRIVE:
             _read_section_gdrive(ss);
             break;
