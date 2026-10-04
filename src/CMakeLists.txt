@@ -65,6 +65,7 @@ set(INCLUDES
     ${CMAKE_SOURCE_DIR}/lib/ftp
     ${CMAKE_SOURCE_DIR}/lib/fuji
     ${CMAKE_SOURCE_DIR}/lib/hardware
+    ${CMAKE_SOURCE_DIR}/lib/hotsync
     ${CMAKE_SOURCE_DIR}/lib/http
     ${CMAKE_SOURCE_DIR}/lib/meatloaf
     ${CMAKE_SOURCE_DIR}/lib/media
@@ -146,6 +147,7 @@ FILE(GLOB_RECURSE SOURCES
     ${CMAKE_SOURCE_DIR}/lib/fuji/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/gpiox/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/hardware/*.cpp
+    ${CMAKE_SOURCE_DIR}/lib/hotsync/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/http/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/meatloaf/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/*.cpp

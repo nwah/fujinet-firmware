@@ -37,6 +37,7 @@
 #include "fnLedStrip.h"
 
 #include "httpService.h"
+#include "HotSyncService.h"
 
 #ifdef ENABLE_CONSOLE
 #include "../lib/console/ESP32Console.h"
@@ -123,6 +124,9 @@ static void heap_alloc_failed_hook(size_t size, uint32_t caps, const char *funct
                    (unsigned)esp_get_free_internal_heap_size(), (unsigned)esp_get_free_heap_size());
 }
 #endif
+
+// Palm OS HotSync server, beside whatever bus this build has.
+static HotSyncService hotsync;
 
 // Initial setup
 #ifdef ESP_PLATFORM
@@ -486,6 +490,9 @@ void main_setup(int argc, char *argv[])
     // Go setup SIO
     SYSTEM_BUS.setup();
 #endif
+
+    if (Config.get_hotsync_enabled() && fnSDFAT.running())
+        hotsync.start(hotsync_config_from(Config), fnSDFAT);
 
 #ifdef ESP_PLATFORM
   #ifdef DEBUG

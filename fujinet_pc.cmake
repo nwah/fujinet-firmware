@@ -144,7 +144,7 @@ set(INCLUDE_DIRS include
     lib/FileSystem
     lib/tcpip lib/ftp lib/TNFSlib lib/telnet lib/fnjson lib/fnhtml lib/fntext lib/fnxml
     lib/tinyxml2
-    lib/webdav lib/http lib/sam lib/task
+    lib/webdav lib/hotsync lib/http lib/sam lib/task
     lib/modem-sniffer lib/printer-emulator
     lib/network-protocol
     lib/fuji lib/bus lib/device lib/media
@@ -182,6 +182,7 @@ set(SOURCES src/main.cpp
     lib/config/fnc_printer.cpp
     lib/config/fnc_save.cpp
     lib/config/fnc_serial.cpp
+    lib/config/fnc_hotsync.cpp
     lib/config/fnc_util.cpp
     lib/config/fnc_wifi.cpp
     include/debug.h
@@ -224,6 +225,16 @@ set(SOURCES src/main.cpp
     lib/tcpip/fnTcpClientSecure.h lib/tcpip/fnTcpClientSecure.cpp
     lib/tcpip/fnTcpServer.h lib/tcpip/fnTcpServer.cpp
     lib/ftp/fnFTP.h lib/ftp/fnFTP.cpp
+    lib/hotsync/Slp.h lib/hotsync/Slp.cpp
+    lib/hotsync/PadpTransport.h lib/hotsync/PadpTransport.cpp
+    lib/hotsync/NetSyncTransport.h lib/hotsync/NetSyncTransport.cpp
+    lib/hotsync/Dlp.h lib/hotsync/Dlp.cpp
+    lib/hotsync/DlpClient.h lib/hotsync/DlpClient.cpp
+    lib/hotsync/PalmDatabase.h lib/hotsync/PalmDatabase.cpp
+    lib/hotsync/HotSyncSession.h lib/hotsync/HotSyncSession.cpp
+    lib/hotsync/HotSyncFsStorage.h lib/hotsync/HotSyncFsStorage.cpp
+    lib/hotsync/HotSyncLinks.h lib/hotsync/HotSyncLinks.cpp
+    lib/hotsync/HotSyncService.h lib/hotsync/HotSyncService.cpp
     lib/TNFSlib/tnfslibMountInfo.h lib/TNFSlib/tnfslibMountInfo.cpp
     lib/TNFSlib/tnfslib.h lib/TNFSlib/tnfslib.cpp
     lib/TNFSlib/tnfslib_udp.h lib/TNFSlib/tnfslib_udp_testing.cpp

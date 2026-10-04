@@ -1,7 +1,7 @@
 # lib/hotsync
 
 The desktop side of a Palm OS HotSync: a device that syncs with FujiNet gets the apps and databases
-queued for it, and its databases are backed up.
+queued for it on the SD card, and its databases are backed up there.
 
 ## Layout
 | File | Defines |
@@ -16,17 +16,26 @@ queued for it, and its databases are backed up.
 | `PalmDatabase.h`, `PalmDatabase.cpp` | `.pdb`/`.prc` files |
 | `HotSyncSession.h`, `HotSyncSession.cpp` | one sync: identify, install, back up, stamp user info |
 | `HotSyncStorage.h` | `HotSyncStorage`, the storage a session reads and writes |
+| `HotSyncFsStorage.h`, `HotSyncFsStorage.cpp` | `HotSyncStorage` on a `FileSystem`, under `/palm` |
+| `HotSyncLinks.h`, `HotSyncLinks.cpp` | `HotSyncLink` over `fnTcpClient` and over an `IOChannel`, and `HotSyncCradleLink`, the settle, deadline and count any serial cradle needs |
+| `HotSyncService.h`, `HotSyncService.cpp` | `HotSyncService`, the thread that listens and runs sessions |
 
 ## How it fits
-- Depends only on `include/global_types.h`; nothing in the firmware uses it yet.
-- `tests/HotSyncTests.cpp` drives it with frames captured from a Palm OS 3.3 device and with a fake
+- `src/main.cpp` starts one `HotSyncService` after the bus when the `[HotSync]` section of
+  fnconfig.ini has `enabled=1` and an SD card is mounted. It serves network HotSync (TCP 14238),
+  serial-over-TCP for POSE and CloudpilotEmu (TCP 6416), and on FujiNet-PC a cradle on the host
+  serial device named by `serial_port`.
+- On the SD card, `/palm/install/` holds files to install on the next sync, `/palm/installed/`
+  the ones already installed, and `/palm/backup/<user>/` the backups.
+- Everything up to `HotSyncSession` depends only on `include/global_types.h`;
+  `tests/HotSyncTests.cpp` drives it with frames captured from a Palm OS 3.3 device and with a fake
   device.
 - Ported from [palm-sync](https://github.com/jichu4n/palm-sync) 0.2.1 (Apache-2.0, copyright
   Chuan Ji; see `LICENSE`); each header names the palm-sync source it follows.
 
 ## Build
-ESP: not built. PC: not part of the firmware build; `tests/CMakeLists.txt` builds `hotsync_tests`
-from these sources.
+ESP: every board, through the `lib/hotsync` glob in `src/CMakeLists.txt`; idle unless enabled.
+PC: listed in `fujinet_pc.cmake`; `tests/CMakeLists.txt` also builds `hotsync_tests`.
 
 ## Notes
 - Backups are one way; there are no record-sync conduits (Memo, Address, Date Book).
