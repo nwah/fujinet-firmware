@@ -9,6 +9,7 @@
 #include "rs232/rs232Network.h"
 #include "modem.h"
 #include "siocpm.h"
+#include "rs232/rs232HotSync.h"
 
 #include "fnSystem.h"
 #include "fnConfig.h"
@@ -104,7 +105,11 @@ void systemBus::_rs232_process_cmd()
         packet.push_back(val);
     }
     if (packet.size())
+    {
+        if (_hotsyncDev != nullptr)
+            _hotsyncDev->bus_stray_bytes(packet.size());
         _modemDev->tx(packet);
+    }
     if (val < 0)
         return;
 
@@ -114,6 +119,9 @@ void systemBus::_rs232_process_cmd()
         Debug_printv("packet fail");
         return;
     }
+
+    if (_hotsyncDev != nullptr)
+        _hotsyncDev->bus_packet_handled();
 
     // Turn on the RS232 indicator LED
     fnLedManager.set(eLed::LED_BUS, true);
@@ -133,6 +141,45 @@ void systemBus::_rs232_process_cmd()
     }
 
     fnLedManager.set(eLed::LED_BUS, false);
+}
+
+// Gives a HotSync cradle its turn on the line; true while the cradle has it.
+bool systemBus::_rs232_lend_line()
+{
+    uint32_t baud = isBoIP() ? 0 : _hotsyncDev->line_wanted();
+    uint8_t buf[64];
+    if (baud == 0)
+    {
+        if (_lent_baud == 0)
+            return false;
+        _serial.setBaudrate(_rs232Baud);
+        // Whatever arrived at the cradle's rate is noise at ours.
+        for (int i = 0; i < 64 && _port->available(); ++i)
+            _port->read(buf, std::min(_port->available(), sizeof(buf)));
+        _lent_baud = 0;
+        _hotsyncDev->line_served(0);
+        return false;
+    }
+
+    if (baud != _lent_baud)
+    {
+        // The last FujiBus reply must leave before the rate changes.
+        _port->flushOutput();
+        _serial.setBaudrate(baud);
+        _lent_baud = baud;
+    }
+    while (size_t avail = _port->available())
+        _hotsyncDev->line_received(buf, _port->read(buf, std::min(avail, sizeof(buf))));
+    bool wrote = false;
+    while (size_t len = _hotsyncDev->line_outgoing(buf, sizeof(buf)))
+    {
+        _port->write(buf, len);
+        wrote = true;
+    }
+    if (wrote)
+        _port->flushOutput();
+    _hotsyncDev->line_served(_lent_baud);
+    return true;
 }
 
 /*
@@ -163,6 +210,9 @@ void systemBus::service()
         _cpmDev->rs232_handle_cpm();
         return; // break!
     }
+
+    if (_hotsyncDev != nullptr && _rs232_lend_line())
+        return;
 
     if (_port->available())
     {

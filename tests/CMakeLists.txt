@@ -549,3 +549,25 @@ if(WIN32)
 endif()
 
 add_test(NAME hotsync_tests COMMAND hotsync_tests)
+
+# ------------------------------------------------------------------------------
+# rs232HotSync: the byte link between the RS232 bus and a HotSync thread. It
+# depends only on the standard library, so it is driven here by a thread that
+# plays systemBus::service() against an in-memory port.
+# ------------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+
+add_executable(rs232_hotsync_tests
+    RS232HotSyncTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/device/rs232/rs232HotSync.cpp
+)
+
+target_include_directories(rs232_hotsync_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+target_compile_definitions(rs232_hotsync_tests PRIVATE BUILD_RS232 UNIT_TESTS)
+target_link_libraries(rs232_hotsync_tests PRIVATE Threads::Threads)
+
+add_test(NAME rs232_hotsync_tests COMMAND rs232_hotsync_tests)

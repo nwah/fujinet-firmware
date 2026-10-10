@@ -16,6 +16,9 @@ board, where the RP2xxx cartridge is the other end of the link.
 - `FujiBusPacket` is also the packet type of [lib/bus/mac/](../mac/) and of the fujiversal path in
   [lib/bus/drivewire/](../drivewire/); the cartridge firmware under [pico/](../../../pico/) carries
   its own copy.
+- When an `rs232HotSync` claims the line, `service()` lends it: it sets the cradle's baud rate and
+  moves bytes between the port and the cradle instead of reading FujiBus, then restores the bus
+  rate when the cradle releases it. Not over BoIP.
 - Ports come from [lib/hardware/](../../hardware/): `UARTChannel`, `ACMChannel` (USB host on
   fujiversal boards) or `BoIPChannel` (PC).
 

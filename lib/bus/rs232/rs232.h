@@ -49,6 +49,7 @@ class rs232NetStream; // declare here so can reference it, but define in netstre
 class rs232Cassette; // Cassette forward-declaration.
 class rs232CPM;      // CPM device.
 class rs232Printer;  // Printer device
+class rs232HotSync;  // Palm cradle sharing the line
 class fujiDevice;
 
 class virtualDevice
@@ -120,8 +121,10 @@ private:
     rs232NetStream *_streamDev = nullptr;
     rs232CPM *_cpmDev = nullptr;
     rs232Printer *_printerdev = nullptr;
+    rs232HotSync *_hotsyncDev = nullptr;
 
     int _rs232Baud = RS232_BAUDRATE;
+    uint32_t _lent_baud = 0;
 
     IOChannel *_port;
 #if FUJINET_OVER_USB
@@ -133,6 +136,7 @@ private:
     BoIPChannel _boip;
 
     void _rs232_process_cmd();
+    bool _rs232_lend_line();
     /* void _rs232_process_queue(); */
 
 public:
@@ -151,6 +155,7 @@ public:
 
     rs232Printer *getPrinter() { return _printerdev; }
     rs232CPM *getCPM() { return _cpmDev; }
+    void setHotSyncCradle(rs232HotSync *cradle) { _hotsyncDev = cradle; }
 
 
     bool shuttingDown = false;                                  // TRUE if we are in shutdown process
