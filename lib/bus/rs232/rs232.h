@@ -7,6 +7,8 @@
 #include "PalmUSBChannel.h"
 #include "FujiBusPacket.h"
 #include "BoIPChannel.h"
+#include "UARTCradle.h"
+#include "PalmCradle.h"
 #include "global_types.h"
 
 #ifdef ESP_PLATFORM
@@ -15,6 +17,8 @@
 #endif /* ESP_PLATFORM */
 
 #include <map>
+#include <chrono>
+#include <string>
 
 #define RS232_BAUDRATE 115200
 
@@ -51,6 +55,7 @@ class rs232Cassette; // Cassette forward-declaration.
 class rs232CPM;      // CPM device.
 class rs232Printer;  // Printer device
 class fujiDevice;
+class CradleHandoff;  // defined in CradleHandoff.h
 
 class virtualDevice
 {
@@ -132,9 +137,24 @@ private:
     ACMChannel _serial;
     bool _usb_boot_priority = false;  // boosted until WiFi connects
 #else /* ! FUJINET_OVER_USB */
-    UARTChannel _serial;
+    UARTCradle _serial;               // a UART is a serial cradle when a Palm is on it
 #endif /* FUJINET_OVER_USB */
     BoIPChannel _boip;
+
+    // A Palm cradle on the line
+    PalmCradle *_cradle = nullptr;      // the line, when a Palm can sit on it
+    CradleHandoff *_hotsync = nullptr;  // where a HotSync found on it goes
+    enum class CradleMode { FUJIBUS, LISTENING, HOTSYNC };
+    CradleMode _cradleMode = CradleMode::FUJIBUS;
+    std::chrono::steady_clock::time_point _cradleLastFujiBus, _cradleNextListen, _cradleDeadline;
+    bool _cradleStray = false;          // bytes that weren't FujiBus since the last listen
+    bool _cradleSawHotSyncUse = false;  // palmUse() was HOTSYNC last pass
+    std::string _cradleScan;            // bytes read while listening
+    bool _cradle_service();
+    bool _cradle_watching();
+    void _cradle_hand_over(const uint8_t *first, size_t len);
+    void _cradle_take_back();
+    void _cradle_drain();
 
     void _rs232_process_cmd();
     /* void _rs232_process_queue(); */
@@ -147,6 +167,10 @@ public:
     void addDevice(virtualDevice *pDevice, fujiDeviceID_t device_id) override;
 
     bool isBoIP() { return _port == &_boip; }
+
+    // Watch the line for a Palm starting a HotSync and hand it over. False when
+    // the line can't carry one (BoIP, or a cartridge over USB).
+    bool attachHotSync(CradleHandoff *handoff);
 
     int getBaudrate();                                          // Gets current RS232 baud rate setting
     void setBaudrate(int baud);                                 // Sets RS232 to specific baud rate

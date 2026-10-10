@@ -579,3 +579,21 @@ if(WIN32)
 endif()
 
 add_test(NAME hotsync_tests COMMAND hotsync_tests)
+
+# ------------------------------------------------------------------------------
+# The RS232 bus's handoff of a cradle HotSync to the HotSync service thread.
+# ------------------------------------------------------------------------------
+add_executable(cradle_handoff_tests
+    CradleHandoffTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/bus/rs232/CradleHandoff.cpp
+)
+
+target_include_directories(cradle_handoff_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+target_compile_definitions(cradle_handoff_tests PRIVATE BUILD_RS232 UNIT_TESTS)
+target_link_libraries(cradle_handoff_tests PRIVATE Threads::Threads)
+
+add_test(NAME cradle_handoff_tests COMMAND cradle_handoff_tests)

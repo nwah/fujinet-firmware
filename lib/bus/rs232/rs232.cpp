@@ -9,6 +9,9 @@
 #include "rs232/rs232Network.h"
 #include "modem.h"
 #include "siocpm.h"
+#include "CradleHandoff.h"
+
+#include <algorithm>
 
 #include "fnSystem.h"
 #include "fnConfig.h"
@@ -29,6 +32,15 @@
 #define RS232_USB_BOOT_PRIORITY 24
 #define RS232_USB_RUN_PRIORITY  20
 #endif
+
+using namespace std::chrono_literals;
+
+// A Palm repeats its WAKEUP for longer than a listen window plus the gap after it.
+static constexpr auto CRADLE_LISTEN_WINDOW = 1500ms;  // at the HotSync rate
+static constexpr auto CRADLE_BUS_WINDOW    = 1500ms;  // at the bus rate between windows
+static constexpr auto CRADLE_IDLE          = 60s;     // no FujiBus this long: listen anyway
+static constexpr auto CRADLE_ACCEPT_TIME   = 5s;      // for the service to pick a HotSync up
+static constexpr const char SLP_PREAMBLE[] = "\xBE\xEF\xED";
 
 // Helper functions outside the class defintions
 
@@ -103,6 +115,21 @@ void systemBus::_rs232_process_cmd()
             break;
         packet.push_back(val);
     }
+    if (packet.size() && _cradle_watching())
+    {
+        // A HotSync that opened at the bus rate; hand it the bytes from its preamble on.
+        auto it = std::search(packet.begin(), packet.end(),
+                              SLP_PREAMBLE, SLP_PREAMBLE + 3);
+        if (it != packet.end())
+        {
+            // The SLIP_END that ended the loop is part of the frame (a PADP flags byte).
+            if (val == SLIP_END)
+                packet.push_back(SLIP_END);
+            _cradle_hand_over(&*it, packet.end() - it);
+            return;
+        }
+        _cradleStray = true;
+    }
     if (packet.size())
         _modemDev->tx(packet);
     if (val < 0)
@@ -114,6 +141,7 @@ void systemBus::_rs232_process_cmd()
         Debug_printv("packet fail");
         return;
     }
+    _cradleLastFujiBus = std::chrono::steady_clock::now();
 
     // Turn on the RS232 indicator LED
     fnLedManager.set(eLed::LED_BUS, true);
@@ -163,6 +191,9 @@ void systemBus::service()
         _cpmDev->rs232_handle_cpm();
         return; // break!
     }
+
+    if (_hotsync && _cradle_service())
+        return;
 
     if (_port->available())
     {
@@ -268,8 +299,180 @@ void systemBus::setup()
     _port = &_serial;
 #endif /* FUJINET_OVER_USB */
 
+    // A Palm can sit on a UART or on the USB Palm cradle, not on BoIP
+#if !FUJINET_OVER_USB
+    _cradle = (_port == &_serial) ? &_serial : nullptr;
+#elif defined(CONFIG_USB_PALM_HOST_ENABLED)
+    _cradle = &_serial;
+#else
+    _cradle = nullptr;
+#endif
+    if (_hotsync && _cradleMode == CradleMode::HOTSYNC)
+        _hotsync->take_back();
+    _cradleMode = CradleMode::FUJIBUS;
+
     Debug_println("RS232 Setup Flush");
     _port->discardInput();
+}
+
+bool systemBus::attachHotSync(CradleHandoff *handoff)
+{
+    if (!_cradle)
+        return false;
+    auto now = std::chrono::steady_clock::now();
+    _hotsync = handoff;
+    _cradleLastFujiBus = now;
+    _cradleNextListen = now;
+    return true;
+}
+
+// Is the line one where a HotSync may start? (Not when no Palm, or a Palm app, is on it.)
+bool systemBus::_cradle_watching()
+{
+    if (!_hotsync || !_cradle)
+        return false;
+    auto use = _cradle->palmUse();
+    return use == PalmCradle::PalmUse::UNKNOWN || use == PalmCradle::PalmUse::HOTSYNC;
+}
+
+// Drop what has already arrived. Not discardInput(), which waits for the line to
+// go quiet and would stall the loop while a Palm keeps sending.
+void systemBus::_cradle_drain()
+{
+    uint8_t buf[64];
+    for (int i = 0; i < 64 && _port->available(); ++i)
+        _port->read(buf, std::min((size_t) _port->available(), sizeof(buf)));
+}
+
+void systemBus::_cradle_hand_over(const uint8_t *first, size_t len)
+{
+    if (!_hotsync->start(first, len))
+    {
+        Debug_printf("Cradle: HotSync service busy, not handing over\n");
+        return;
+    }
+    _cradleMode = CradleMode::HOTSYNC;
+    _cradleDeadline = std::chrono::steady_clock::now() + CRADLE_ACCEPT_TIME;
+    Debug_printf("Cradle: a Palm started a HotSync, handing it to the HotSync service\n");
+}
+
+void systemBus::_cradle_take_back()
+{
+    auto now = std::chrono::steady_clock::now();
+    _hotsync->take_back();
+    if (_cradle->hotsyncBaudrate() && _serial.getBaudrate() != (uint32_t) _rs232Baud)
+    {
+        _serial.flushOutput();
+        _serial.setBaudrate(_rs232Baud);
+    }
+    _cradle_drain();
+    _cradleMode = CradleMode::FUJIBUS;
+    _cradleNextListen = now + CRADLE_BUS_WINDOW;
+    _cradleLastFujiBus = now;
+    _cradleStray = false;
+    Debug_printf("Cradle: HotSync over, serving FujiBus at %d baud\n", _rs232Baud);
+}
+
+// The bus decides what the cradle line carries. True when this pass isn't FujiBus.
+bool systemBus::_cradle_service()
+{
+    auto now = std::chrono::steady_clock::now();
+    uint8_t buf[256];
+
+    switch (_cradleMode)
+    {
+    case CradleMode::FUJIBUS:
+    {
+        auto use = _cradle->palmUse();
+        // A USB cradle knows when the HotSync app opened the line: hand over at once.
+        if (use == PalmCradle::PalmUse::HOTSYNC)
+        {
+            if (!_cradleSawHotSyncUse)
+            {
+                _cradleSawHotSyncUse = true;
+                _cradle_hand_over(nullptr, 0);
+                return true;
+            }
+        }
+        else
+            _cradleSawHotSyncUse = false;
+
+        uint32_t rate = _cradle->hotsyncBaudrate();
+        // A HotSync that opens at another rate can't be heard at the bus rate: listen
+        // for it at its own rate while no host talks FujiBus, or once bytes that
+        // weren't FujiBus show up (a WAKEUP at 9600 reads as garbage at 115200).
+        if (use == PalmCradle::PalmUse::UNKNOWN && rate && rate != (uint32_t) _rs232Baud
+            && now >= _cradleNextListen
+            && (_cradleStray || now - _cradleLastFujiBus >= CRADLE_IDLE))
+        {
+            _serial.flushOutput();
+            _serial.setBaudrate(rate);
+            _cradle_drain();
+            _cradleStray = false;
+            _cradleScan.clear();
+            _cradleDeadline = now + CRADLE_LISTEN_WINDOW;
+            _cradleMode = CradleMode::LISTENING;
+            return true;
+        }
+        return false;
+    }
+
+    case CradleMode::LISTENING:
+    {
+        // Never block: the window is short and the bus has other work.
+        size_t n = std::min((size_t) _port->available(), sizeof(buf));
+        if (n)
+        {
+            n = _port->read(buf, n);
+            _cradleScan.append((const char *) buf, n);
+        }
+        size_t pos = _cradleScan.find(SLP_PREAMBLE, 0, 3);
+        if (pos != std::string::npos)
+        {
+            _cradle_hand_over((const uint8_t *) _cradleScan.data() + pos, _cradleScan.size() - pos);
+            return true;
+        }
+        // Keep a preamble split across reads.
+        if (_cradleScan.size() > 2)
+            _cradleScan.erase(0, _cradleScan.size() - 2);
+        if (now >= _cradleDeadline)
+        {
+            _serial.setBaudrate(_rs232Baud);
+            _cradle_drain();
+            _cradleMode = CradleMode::FUJIBUS;
+            _cradleNextListen = now + CRADLE_BUS_WINDOW;
+        }
+        return true;
+    }
+
+    case CradleMode::HOTSYNC:
+    {
+        size_t n = std::min((size_t) _port->available(), sizeof(buf));
+        if (n)
+        {
+            n = _port->read(buf, n);
+            _hotsync->received(buf, n);
+        }
+        while ((n = _hotsync->outgoing(buf, sizeof(buf))) > 0)
+            _port->write(buf, n);
+
+        uint32_t baud;
+        if (_hotsync->baud_wanted(baud))
+        {
+            _serial.flushOutput();
+            if (_cradle->hotsyncBaudrate())  // USB has no rate
+                _serial.setBaudrate(baud);
+            _hotsync->baud_switched();
+            Debug_printf("Cradle: HotSync at %lu baud\n", (unsigned long) baud);
+        }
+
+        // After pumping out, so the service's last bytes are sent.
+        if (_hotsync->finished() || (!_hotsync->accepted() && now >= _cradleDeadline))
+            _cradle_take_back();
+        return true;
+    }
+    }
+    return false;
 }
 
 // Add device to RS232 bus

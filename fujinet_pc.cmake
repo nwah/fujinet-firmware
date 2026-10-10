@@ -508,6 +508,8 @@ if(FUJINET_TARGET STREQUAL "RS232")
 
     lib/bus/rs232/rs232.h lib/bus/rs232/rs232.cpp
     lib/bus/rs232/FujiBusPacket.h lib/bus/rs232/FujiBusPacket.cpp
+    lib/bus/rs232/CradleHandoff.h lib/bus/rs232/CradleHandoff.cpp
+    lib/hardware/PalmCradle.h lib/hardware/UARTCradle.h
     lib/hardware/BoIPChannel.h lib/hardware/BoIPChannel.cpp
 
     lib/media/rs232/diskType.h lib/media/rs232/diskType.cpp
