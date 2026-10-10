@@ -20,6 +20,8 @@
 #define VISOR_REQUEST_BYTES_AVAILABLE       0x01
 #define VISOR_GET_CONNECTION_INFORMATION    0x03
 #define VISOR_CONNECTION_INFO_SIZE          6   // num_ports u16, 2 x {function, port}
+#define VISOR_FUNCTION_GENERIC              0x00
+#define VISOR_FUNCTION_HOTSYNC              0x02 // PALM_OS in Linux's visor.h
 
 #define MAX_FIFO_PAYLOAD 64
 typedef struct {
@@ -145,7 +147,7 @@ static void workerTaskForwarder(void *arg)
   Device
 -----------------------------------------------------------------------*/
 
-bool PalmUSBChannel::findEndpoints(const usb_config_desc_t *config)
+bool PalmUSBChannel::findEndpoints(const usb_config_desc_t *config, uint8_t wanted)
 {
     int offset = 0;
     const usb_intf_desc_t *intf = usb_parse_interface_descriptor(config, 0, 0, &offset);
@@ -173,7 +175,7 @@ bool PalmUSBChannel::findEndpoints(const usb_config_desc_t *config)
                 firstIn = ep->bEndpointAddress;
                 firstInMps = USB_EP_DESC_GET_MPS(ep);
             }
-            if (num == _endpointNumber)
+            if (num == wanted)
             {
                 _inEp = ep->bEndpointAddress;
                 _inMps = USB_EP_DESC_GET_MPS(ep);
@@ -183,7 +185,7 @@ bool PalmUSBChannel::findEndpoints(const usb_config_desc_t *config)
         {
             if (!firstOut)
                 firstOut = ep->bEndpointAddress;
-            if (num == _endpointNumber)
+            if (num == wanted)
                 _outEp = ep->bEndpointAddress;
         }
     }
@@ -198,9 +200,9 @@ bool PalmUSBChannel::findEndpoints(const usb_config_desc_t *config)
     return _inEp && _outEp && _inMps;
 }
 
-// Send a vendor IN request to an endpoint and wait for it; the answer is
-// not needed, only that the Palm has been asked
-bool PalmUSBChannel::vendorRequestIn(uint8_t request, uint16_t index, uint16_t length)
+// Send a vendor IN request to an endpoint and wait for it. True when the
+// Palm answered; the reply, if wanted, is copied to `reply` (length bytes).
+bool PalmUSBChannel::vendorRequestIn(uint8_t request, uint16_t index, uint16_t length, uint8_t *reply)
 {
     usb_setup_packet_t *setup = (usb_setup_packet_t *)_ctrl->data_buffer;
 
@@ -220,7 +222,15 @@ bool PalmUSBChannel::vendorRequestIn(uint8_t request, uint16_t index, uint16_t l
         return false;
     if (xSemaphoreTake(_ctrlDone, pdMS_TO_TICKS(CTRL_TIMEOUT_MS)) != pdTRUE)
         return false;
-    return _ctrl->status == USB_TRANSFER_STATUS_COMPLETED;
+    if (_ctrl->status != USB_TRANSFER_STATUS_COMPLETED)
+        return false;
+    if (reply)
+    {
+        if (_ctrl->actual_num_bytes < (int)(sizeof(usb_setup_packet_t) + length))
+            return false;
+        memcpy(reply, _ctrl->data_buffer + sizeof(usb_setup_packet_t), length);
+    }
+    return true;
 }
 
 void PalmUSBChannel::openDevice(uint8_t address)
@@ -241,7 +251,7 @@ void PalmUSBChannel::openDevice(uint8_t address)
         return;
     }
 
-    if (usb_host_get_active_config_descriptor(dev, &config) != ESP_OK || !findEndpoints(config))
+    if (usb_host_get_active_config_descriptor(dev, &config) != ESP_OK || !findEndpoints(config, _endpointNumber))
     {
         Debug_printv("PalmUSB: no bulk endpoint pair on %04X:%04X", desc->idVendor, desc->idProduct);
         usb_host_device_close(_client, dev);
@@ -258,7 +268,40 @@ void PalmUSBChannel::openDevice(uint8_t address)
 
     // The Handspring handshake, as palm-sync and Linux's visor driver do it.
     // Failures are fine: the byte stream works without it.
-    bool info = vendorRequestIn(VISOR_GET_CONNECTION_INFORMATION, _outEp & 0x0F, VISOR_CONNECTION_INFO_SIZE);
+    uint8_t reply[VISOR_CONNECTION_INFO_SIZE] = {};
+    bool info = vendorRequestIn(VISOR_GET_CONNECTION_INFORMATION, _outEp & 0x0F,
+                                VISOR_CONNECTION_INFO_SIZE, reply);
+    if (info)
+    {
+        // With an app open: two generic ports. With HotSync running: a
+        // HotSync port, whose number is also its bulk endpoint number.
+        PalmUse use = PalmUse::APP;
+        uint8_t hotsyncPort = 0;
+        for (int i = 0; i < std::min((int)reply[0], 2); i++)
+        {
+            if (reply[2 + 2 * i] == VISOR_FUNCTION_HOTSYNC)
+            {
+                use = PalmUse::HOTSYNC;
+                hotsyncPort = reply[3 + 2 * i];
+                break;
+            }
+        }
+        if (use == PalmUse::HOTSYNC && hotsyncPort != (_outEp & 0x0F))
+        {
+            uint8_t inEp = _inEp, outEp = _outEp;
+            uint16_t inMps = _inMps;
+            if (!findEndpoints(config, hotsyncPort))
+            {
+                _inEp = inEp;
+                _outEp = outEp;
+                _inMps = inMps;
+            }
+        }
+        _use = use;
+    }
+    else
+        _use = PalmUse::UNKNOWN;
+
     bool avail = vendorRequestIn(VISOR_REQUEST_BYTES_AVAILABLE, _outEp & 0x0F, 2);
 
     _connected = true;
@@ -273,14 +316,16 @@ void PalmUSBChannel::openDevice(uint8_t address)
             _inFlight++;
     }
 
-    Debug_printv("PalmUSB: connected %04X:%04X, bulk IN 0x%02X (%u) OUT 0x%02X, info %s/%s",
+    Debug_printv("PalmUSB: connected %04X:%04X, bulk IN 0x%02X (%u) OUT 0x%02X, info %s/%s, %s",
                  desc->idVendor, desc->idProduct, _inEp, _inMps, _outEp,
-                 info ? "ok" : "no", avail ? "ok" : "no");
+                 info ? "ok" : "no", avail ? "ok" : "no",
+                 _use == PalmUse::HOTSYNC ? "HotSync" : _use == PalmUse::APP ? "app" : "unknown");
 }
 
 void PalmUSBChannel::closeDevice()
 {
     _connected = false;
+    _use = PalmUse::NONE;
     if (!_dev)
         return;
 

@@ -16,6 +16,7 @@ Fujiversal boards.
 | `Esp.*` | `EspClass`: a port of Arduino-ESP32 `Esp.cpp` (LGPL 2.1), used only by the console |
 | `IOChannel.*`, `RS232ChannelProtocol.h` | `IOChannel`, the abstract byte stream with a FIFO, and the baud-rate and control-line mixin; `IOChannel.h` also defines `HELLO_IM_A_PC` and `ITS_A_UNIX_SYSTEM_I_KNOW_THIS` |
 | `ESP32UARTChannel.*`, `TTYChannel.*`, `COMChannel.*`, `UARTChannel.h` | `IOChannel` over an ESP UART, a POSIX tty or a Windows COM port; `UARTChannel` is an alias for whichever matches the build; `fnDebugConsole` is the ESP debug UART |
+| `PalmCradle.h`, `UARTCradle.h` | `PalmCradle`: a line a Palm handheld sits on, telling the bus what the Palm has the line open for (an app, or HotSync) and the rate a HotSync opens at; `UARTCradle` is a `UARTChannel` that is one. `PalmUSBChannel` is the USB cradle |
 | `BoIPChannel.*` | `BoIPChannel`: bus-over-IP, the TCP transport FujiNet-PC uses in place of a cable |
 | `ACMChannel.*`, `fnUsbHost.*` | `ACMChannel`: a USB CDC-ACM host channel to a Fujiversal cartridge under `CONFIG_USB_CDC_ACM_HOST_ENABLED`; `fnUsbHost` installs the USB host once |
 | `PicobootClient.*`, `fnPicoUpdater.*`, `fn_pico_blob.h` | The PICOBOOT client ported from picotool; `PicoUpdater` and `fnPicoUpdater` reflash the RP2xxx at boot when the embedded image changed, under `CONFIG_USB_PICOBOOT_HOST_ENABLED`; `fn_pico_blob.h` reads the image table that `build_pico.py` generates into the env's build directory as `fn_pico_blob_data.cpp` on every ESP build |

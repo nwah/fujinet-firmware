@@ -13,8 +13,12 @@
 // open, and drops off the bus when the app closes it, so unlike ACMChannel
 // begin() does not wait for a device: the channel is simply down (writes
 // are dropped, nothing arrives) until the Palm shows up.
+//
+// It is a PalmCradle: the connection info says whether an app (two generic
+// ports) or the HotSync app (a HotSync port) opened the link.
 
 #include "IOChannel.h"
+#include "PalmCradle.h"
 #include "RS232ChannelProtocol.h"
 
 #include <atomic>
@@ -26,7 +30,7 @@
 
 #define PALMUSB_IN_TRANSFERS 4
 
-class PalmUSBChannel : public IOChannel, public RS232ChannelProtocol
+class PalmUSBChannel : public IOChannel, public RS232ChannelProtocol, public PalmCradle
 {
 private:
     usb_host_client_handle_t _client = nullptr;
@@ -38,6 +42,7 @@ private:
     uint8_t _interface = 0, _inEp = 0, _outEp = 0;
     uint16_t _inMps = 0;
     std::atomic<bool> _connected{false};
+    std::atomic<PalmUse> _use{PalmUse::NONE};
     std::atomic<int> _inFlight{0};
     std::atomic<bool> _outPending{false};
 
@@ -45,9 +50,9 @@ private:
     usb_transfer_t *_out = nullptr;
     usb_transfer_t *_ctrl = nullptr;
 
-    // Which bulk endpoint pair carries the data. With the USB Library open
-    // the Palm reports two generic ports; port 1 is the one the Palm side
-    // of FujiNet uses (see fujinet-palm tools/visorbridge.js).
+    // The port an app's FujiBus uses. With the USB Library open the Palm
+    // reports two generic ports; port 1 is the one the Palm side of FujiNet
+    // uses (see fujinet-palm tools/visorbridge.js).
     uint8_t _endpointNumber = 1;
 
     uint16_t _expected_vid = 0x082D, _expected_pid = 0x0100;
@@ -55,8 +60,8 @@ private:
 
     void openDevice(uint8_t address);
     void closeDevice();
-    bool findEndpoints(const usb_config_desc_t *config);
-    bool vendorRequestIn(uint8_t request, uint16_t index, uint16_t length);
+    bool findEndpoints(const usb_config_desc_t *config, uint8_t wanted);
+    bool vendorRequestIn(uint8_t request, uint16_t index, uint16_t length, uint8_t *reply = nullptr);
 
 protected:
     void updateFIFO() override;
@@ -74,6 +79,10 @@ public:
     void setServicePriority(UBaseType_t priority);
 
     bool connected() { return _connected; }
+
+    PalmUse palmUse() override { return _connected ? _use.load() : PalmUse::NONE; }
+    // USB has no line rate; a HotSync arrives at the bus's own "rate"
+    uint32_t hotsyncBaudrate() override { return 0; }
 
     void flushOutput() override {}
 
