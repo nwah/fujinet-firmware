@@ -37,6 +37,9 @@
 #include "fnLedStrip.h"
 
 #include "httpService.h"
+#ifdef BUILD_RS232
+#include "rs232/rs232HotSync.h"
+#endif
 #include "HotSyncService.h"
 
 #ifdef ENABLE_CONSOLE
@@ -125,8 +128,10 @@ static void heap_alloc_failed_hook(size_t size, uint32_t caps, const char *funct
 }
 #endif
 
-// Palm OS HotSync server, beside whatever bus this build has.
+// Palm OS HotSync server, beside whatever bus this build has; a cradle with
+// serial_port=bus shares the bus line where the bus supports it.
 static HotSyncService hotsync;
+static HotSyncSharedCradle *hotsync_cradle = nullptr;
 
 // Initial setup
 #ifdef ESP_PLATFORM
@@ -367,6 +372,20 @@ void main_setup(int argc, char *argv[])
 
     rs232Modem *mdm = new rs232Modem(ptrfs, Config.get_modem_sniffer_enabled()); // Config/User selected sniffer enable
     SYSTEM_BUS.addDevice(mdm, FUJI_DEVICEID::SERIAL); // R:
+
+    if (Config.get_hotsync_enabled() && Config.get_hotsync_serial_port() == HOTSYNC_BUS_SERIAL_PORT)
+    {
+        if (Config.get_boip_enabled())
+        {
+            Debug_printf("HotSync: the cradle cannot share a BoIP line\r\n");
+        }
+        else
+        {
+            rs232HotSync *line = new rs232HotSync();
+            SYSTEM_BUS.setHotSyncCradle(line);
+            hotsync_cradle = new HotSyncBusCradle<rs232HotSync>(*line);
+        }
+    }
 #endif
 
 #ifdef BUILD_RC2014
@@ -492,7 +511,7 @@ void main_setup(int argc, char *argv[])
 #endif
 
     if (Config.get_hotsync_enabled() && fnSDFAT.running())
-        hotsync.start(hotsync_config_from(Config), fnSDFAT);
+        hotsync.start(hotsync_config_from(Config), fnSDFAT, hotsync_cradle);
 
 #ifdef ESP_PLATFORM
   #ifdef DEBUG

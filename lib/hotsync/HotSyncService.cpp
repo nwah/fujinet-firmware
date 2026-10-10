@@ -25,14 +25,19 @@ static constexpr uint32_t HOTSYNC_TASK_STACK = 8192;
 // Identifies FujiNet as "the PC" a device last synced with ("FJNT").
 static constexpr uint32_t HOTSYNC_PC_ID = 0x464A4E54;
 
-// Bounds each WAKEUP wait so the thread still sees stop() and the listeners.
+// Bounds each WAKEUP wait. On a shared bus line the cradle then leaves the
+// line to the bus for as long; the device repeats its WAKEUP for longer than
+// one full cycle, and a Palm app repeats its FujiBus request.
 static constexpr auto CRADLE_HOTSYNC_WINDOW = std::chrono::milliseconds(1500);
+static constexpr auto CRADLE_BUS_WINDOW = std::chrono::milliseconds(1500);
 
-// A Palm cradle on a FujiNet-PC serial device.
+// A Palm cradle on a FujiNet-PC serial device or on a shared bus line.
 struct HotSyncService::SerialCradle {
     std::unique_ptr<UARTChannel> channel;
     std::unique_ptr<HotSyncChannelLink> line;
+    HotSyncSharedCradle *shared = nullptr;
     std::unique_ptr<HotSyncCradleLink> link;
+    std::chrono::steady_clock::time_point next_window;
 
     ~SerialCradle()
     {
@@ -71,12 +76,14 @@ HotSyncService::~HotSyncService()
     stop();
 }
 
-void HotSyncService::start(const HotSyncServiceConfig &config, FileSystem &fs)
+void HotSyncService::start(const HotSyncServiceConfig &config, FileSystem &fs,
+                           HotSyncSharedCradle *shared)
 {
     if (running())
         return;
     _config = config;
     _fs = &fs;
+    _shared = shared;
     _stopping = false;
 #ifdef ESP_PLATFORM
     // Core 1 belongs to fnLoop, which never blocks at a higher priority.
@@ -160,8 +167,22 @@ void HotSyncService::open_cradle()
 {
     if (_config.serial_port.empty())
         return;
+    if (_config.serial_port == HOTSYNC_BUS_SERIAL_PORT)
+    {
+        if (_shared == nullptr)
+        {
+            Debug_printf("HotSync: this bus cannot lend its line to a cradle (not RS232, or BoIP)\r\n");
+            return;
+        }
+        auto cradle = std::make_unique<SerialCradle>();
+        cradle->shared = _shared;
+        cradle->link = std::make_unique<HotSyncCradleLink>(*_shared);
+        Debug_printf("HotSync: cradle on the bus line\r\n");
+        _cradle = std::move(cradle);
+        return;
+    }
 #ifdef ESP_PLATFORM
-    Debug_printf("HotSync: serial_port is only supported on FujiNet-PC\r\n");
+    Debug_printf("HotSync: a cradle here must use serial_port=%s\r\n", HOTSYNC_BUS_SERIAL_PORT);
 #else
     auto cradle = std::make_unique<SerialCradle>();
     cradle->channel = std::make_unique<UARTChannel>();
@@ -180,8 +201,22 @@ void HotSyncService::open_cradle()
 
 void HotSyncService::poll_serial()
 {
-    if (_cradle)
-        listen_for_hotsync(*_cradle);
+    if (!_cradle || std::chrono::steady_clock::now() < _cradle->next_window)
+        return;
+
+    SerialCradle &cradle = *_cradle;
+    if (cradle.shared == nullptr)
+    {
+        listen_for_hotsync(cradle);
+        return;
+    }
+    if (!cradle.shared->host_active())
+    {
+        if (cradle.shared->claim().is_success())
+            listen_for_hotsync(cradle);
+        cradle.shared->release();
+    }
+    cradle.next_window = std::chrono::steady_clock::now() + CRADLE_BUS_WINDOW;
 }
 
 void HotSyncService::listen_for_hotsync(SerialCradle &cradle)

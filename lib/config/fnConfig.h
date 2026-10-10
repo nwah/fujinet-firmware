@@ -534,7 +534,7 @@ private:
         std::string backup = "flagged";
         int netsync_port = 14238;
         int emulator_port = 6416;
-        // Cradle serial device, a host path on FujiNet-PC
+        // Cradle serial device: a host path on FujiNet-PC, or "bus" to share the RS232 bus line
         std::string serial_port;
     };
 

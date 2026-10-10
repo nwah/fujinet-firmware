@@ -4,11 +4,13 @@
 // Makes FujiNet a HotSync server. A Palm device syncs with it over:
 //   - network HotSync (NetSync, TCP 14238);
 //   - serial-over-TCP, which POSE and CloudpilotEmu use for their serial port;
-//   - a serial cradle on a FujiNet-PC serial device.
+//   - a serial cradle, on a FujiNet-PC serial device or on a bus line it
+//     shares (HotSyncSharedCradle.h), where Palm apps then reach FujiNet.
 // Each sync installs the files queued in <root>/install and backs databases
 // up to <root>/backup/<user>.
 
 #include "HotSyncSession.h"
+#include "HotSyncSharedCradle.h"
 
 #include <atomic>
 #include <memory>
@@ -27,9 +29,12 @@ struct HotSyncServiceConfig {
     // 0 disables a listener.
     uint16_t netsync_port = 14238;
     uint16_t emulator_port = 6416;
-    // Host serial device for a cradle on FujiNet-PC. Empty disables it.
+    // Serial device for a cradle: a host device path on FujiNet-PC, or
+    // HOTSYNC_BUS_SERIAL_PORT to share the bus line. Empty disables it.
     std::string serial_port;
 };
+
+constexpr const char *HOTSYNC_BUS_SERIAL_PORT = "bus";
 
 class HotSyncService
 {
@@ -38,7 +43,10 @@ public:
     HotSyncService();
     ~HotSyncService();
 
-    void start(const HotSyncServiceConfig &config, FileSystem &fs);
+    // shared is the bus line a cradle with serial_port=bus uses; builds
+    // whose bus cannot share its line pass nullptr.
+    void start(const HotSyncServiceConfig &config, FileSystem &fs,
+               HotSyncSharedCradle *shared = nullptr);
     void stop();
     bool running() const { return _thread.joinable(); }
     // One line describing the most recent sync, for the web UI.
@@ -61,6 +69,7 @@ private:
 
     HotSyncServiceConfig _config;
     FileSystem *_fs = nullptr;
+    HotSyncSharedCradle *_shared = nullptr;
     std::thread _thread;
     std::atomic<bool> _stopping{false};
     std::unique_ptr<fnTcpServer> _netsync_server;

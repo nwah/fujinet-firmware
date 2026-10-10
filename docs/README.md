@@ -8,6 +8,7 @@ repository root in `CONTRIBUTING.md` and `AGENTS.md`.
 |---|---|
 | `cpp-style.md` | C++ and code-structure rules; the companion to `CONTRIBUTING.md` that new device code is reviewed against |
 | `fujiversal-flashing.md` | How one ESP32 firmware image carries and flashes the companion RP2040/RP2350 cartridge firmware over PICOBOOT |
+| `hotsync.md` | Palm HotSync: the protocol stack, the service, and how an RS232 cradle shares the bus line with FujiBus |
 | `mac68k.md` | The Macintosh 68k board: ESP32 plus Pico on the floppy port, disk slots and image types |
 | `mac68k-floppy-write.md` | The writable-floppy (GCR capture) path on that board, with its test plan |
 | `mac68k-stuffit.md` | Mounting StuffIt, BinHex and MacBinary archives on the Mac target, and the sample corpus |

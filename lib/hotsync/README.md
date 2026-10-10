@@ -18,18 +18,25 @@ queued for it on the SD card, and its databases are backed up there.
 | `HotSyncStorage.h` | `HotSyncStorage`, the storage a session reads and writes |
 | `HotSyncFsStorage.h`, `HotSyncFsStorage.cpp` | `HotSyncStorage` on a `FileSystem`, under `/palm` |
 | `HotSyncLinks.h`, `HotSyncLinks.cpp` | `HotSyncLink` over `fnTcpClient` and over an `IOChannel`, and `HotSyncCradleLink`, the settle, deadline and count any serial cradle needs |
+| `HotSyncSharedCradle.h` | `HotSyncSharedCradle`, a cradle on a line the bus owns and lends for each HotSync window, and `HotSyncBusCradle`, the adapter from a bus's cradle class |
 | `HotSyncService.h`, `HotSyncService.cpp` | `HotSyncService`, the thread that listens and runs sessions |
 
 ## How it fits
 - `src/main.cpp` starts one `HotSyncService` after the bus when the `[HotSync]` section of
   fnconfig.ini has `enabled=1` and an SD card is mounted. It serves network HotSync (TCP 14238),
-  serial-over-TCP for POSE and CloudpilotEmu (TCP 6416), and on FujiNet-PC a cradle on the host
-  serial device named by `serial_port`.
+  serial-over-TCP for POSE and CloudpilotEmu (TCP 6416), and a serial cradle: on FujiNet-PC the
+  host device named by `serial_port`, on RS232 builds `serial_port=bus`, the bus line itself.
+- On the bus line, `rs232HotSync` in [lib/device/rs232/](../device/rs232/) is the cradle;
+  `HotSyncBusCradle<rs232HotSync>` adapts it to `HotSyncSharedCradle`, so this library depends on no
+  bus. The bus never lends its line over BoIP, so `serial_port=bus` does nothing there. A HotSync opens at 9600 baud, which the bus cannot read at its own rate, so
+  while no host has sent FujiBus for a minute the service claims the line for 1.5 s windows and
+  listens for a WAKEUP; bytes that are not FujiBus end that minute early.
 - On the SD card, `/palm/install/` holds files to install on the next sync, `/palm/installed/`
   the ones already installed, and `/palm/backup/<user>/` the backups.
 - Everything up to `HotSyncSession` depends only on `include/global_types.h`;
   `tests/HotSyncTests.cpp` drives it with frames captured from a Palm OS 3.3 device and with a fake
   device.
+- Design and the bus hand-off: `docs/hotsync.md`.
 - Ported from [palm-sync](https://github.com/jichu4n/palm-sync) 0.2.1 (Apache-2.0, copyright
   Chuan Ji; see `LICENSE`); each header names the palm-sync source it follows.
 
