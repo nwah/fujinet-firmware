@@ -27,6 +27,8 @@ static constexpr uint32_t HOTSYNC_PC_ID = 0x464A4E54;
 
 // Bounds each WAKEUP wait so the thread still sees stop() and the listeners.
 static constexpr auto CRADLE_HOTSYNC_WINDOW = std::chrono::milliseconds(1500);
+// The bus may hand over mid-WAKEUP; the Palm repeats it about once a second.
+static constexpr auto BUS_CRADLE_WAKEUP_WAIT = std::chrono::seconds(4);
 
 // A Palm cradle on a FujiNet-PC serial device.
 struct HotSyncService::SerialCradle {
@@ -71,12 +73,14 @@ HotSyncService::~HotSyncService()
     stop();
 }
 
-void HotSyncService::start(const HotSyncServiceConfig &config, FileSystem &fs)
+void HotSyncService::start(const HotSyncServiceConfig &config, FileSystem &fs,
+                           HotSyncBusCradle *bus_cradle)
 {
     if (running())
         return;
     _config = config;
     _fs = &fs;
+    _bus_cradle = bus_cradle;
     _stopping = false;
 #ifdef ESP_PLATFORM
     // Core 1 belongs to fnLoop, which never blocks at a higher priority.
@@ -160,8 +164,17 @@ void HotSyncService::open_cradle()
 {
     if (_config.serial_port.empty())
         return;
+    if (_config.serial_port == HOTSYNC_BUS_SERIAL_PORT)
+    {
+        if (_bus_cradle)
+            Debug_printf("HotSync: cradle on the bus line\r\n");
+        else
+            Debug_printf("HotSync: the bus line is not a cradle here (not RS232, or BoIP)\r\n");
+        return;
+    }
+    _bus_cradle = nullptr;
 #ifdef ESP_PLATFORM
-    Debug_printf("HotSync: serial_port is only supported on FujiNet-PC\r\n");
+    Debug_printf("HotSync: a cradle here must use serial_port=bus\r\n");
 #else
     auto cradle = std::make_unique<SerialCradle>();
     cradle->channel = std::make_unique<UARTChannel>();
@@ -180,8 +193,29 @@ void HotSyncService::open_cradle()
 
 void HotSyncService::poll_serial()
 {
+    if (_bus_cradle && _bus_cradle->accept())
+        serve_bus_cradle();
     if (_cradle)
         listen_for_hotsync(*_cradle);
+}
+
+void HotSyncService::serve_bus_cradle()
+{
+    PadpTransport padp(*_bus_cradle);
+    auto deadline = std::chrono::steady_clock::now() + BUS_CRADLE_WAKEUP_WAIT;
+    success_is_true woke = padp.wait_for_wakeup();
+    while (woke.is_error() && std::chrono::steady_clock::now() < deadline && !_stopping)
+        woke = padp.wait_for_wakeup();
+    if (woke.is_error())
+        Debug_printf("HotSync: no WAKEUP from the cradle on the bus line\r\n");
+    else if (padp.answer_wakeup().is_error())
+        Debug_printf("HotSync: the Palm on the bus line did not take our CMP INIT\r\n");
+    else
+    {
+        HotSyncFsStorage storage(*_fs, _config.root);
+        record(HotSyncSession(padp, storage, session_options()).run());
+    }
+    _bus_cradle->finish();
 }
 
 void HotSyncService::listen_for_hotsync(SerialCradle &cradle)

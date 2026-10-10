@@ -4,10 +4,12 @@
 // Makes FujiNet a HotSync server. A Palm device syncs with it over:
 //   - network HotSync (NetSync, TCP 14238);
 //   - serial-over-TCP, which POSE and CloudpilotEmu use for their serial port;
-//   - a serial cradle on a FujiNet-PC serial device.
+//   - a serial cradle, on a FujiNet-PC serial device or on the bus line
+//     (HotSyncBusCradle.h), where Palm apps also reach FujiNet.
 // Each sync installs the files queued in <root>/install and backs databases
 // up to <root>/backup/<user>.
 
+#include "HotSyncBusCradle.h"
 #include "HotSyncSession.h"
 
 #include <atomic>
@@ -27,9 +29,12 @@ struct HotSyncServiceConfig {
     // 0 disables a listener.
     uint16_t netsync_port = 14238;
     uint16_t emulator_port = 6416;
-    // Host serial device for a cradle on FujiNet-PC. Empty disables it.
+    // A host device path on FujiNet-PC, or HOTSYNC_BUS_SERIAL_PORT for a cradle
+    // on the bus line. Empty disables it.
     std::string serial_port;
 };
+
+constexpr const char *HOTSYNC_BUS_SERIAL_PORT = "bus";
 
 class HotSyncService
 {
@@ -38,7 +43,10 @@ public:
     HotSyncService();
     ~HotSyncService();
 
-    void start(const HotSyncServiceConfig &config, FileSystem &fs);
+    // bus_cradle is the bus's cradle line, for serial_port=bus; nullptr where
+    // the bus has none.
+    void start(const HotSyncServiceConfig &config, FileSystem &fs,
+               HotSyncBusCradle *bus_cradle = nullptr);
     void stop();
     bool running() const { return _thread.joinable(); }
     // One line describing the most recent sync, for the web UI.
@@ -54,6 +62,7 @@ private:
     void poll_listener(fnTcpServer *server, Transport transport);
     void open_cradle();
     void poll_serial();
+    void serve_bus_cradle();
     void listen_for_hotsync(SerialCradle &cradle);
     void sync(HotSyncLink &link, Transport transport);
     HotSyncOptions session_options() const;
@@ -69,6 +78,7 @@ private:
     std::string _last_result = "No HotSync yet";
 
     std::unique_ptr<SerialCradle> _cradle;
+    HotSyncBusCradle *_bus_cradle = nullptr;
 };
 
 class fnConfig;

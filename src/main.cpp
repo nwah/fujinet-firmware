@@ -38,6 +38,9 @@
 
 #include "httpService.h"
 #include "HotSyncService.h"
+#ifdef BUILD_RS232
+#include "../lib/bus/rs232/CradleHandoff.h"
+#endif
 
 #ifdef ENABLE_CONSOLE
 #include "../lib/console/ESP32Console.h"
@@ -127,6 +130,8 @@ static void heap_alloc_failed_hook(size_t size, uint32_t caps, const char *funct
 
 // Palm OS HotSync server, beside whatever bus this build has.
 static HotSyncService hotsync;
+// The RS232 bus's cradle line, when serial_port=bus and the bus can carry one.
+static HotSyncBusCradle *hotsync_cradle = nullptr;
 
 // Initial setup
 #ifdef ESP_PLATFORM
@@ -367,6 +372,15 @@ void main_setup(int argc, char *argv[])
 
     rs232Modem *mdm = new rs232Modem(ptrfs, Config.get_modem_sniffer_enabled()); // Config/User selected sniffer enable
     SYSTEM_BUS.addDevice(mdm, FUJI_DEVICEID::SERIAL); // R:
+
+    if (Config.get_hotsync_enabled() && Config.get_hotsync_serial_port() == HOTSYNC_BUS_SERIAL_PORT)
+    {
+        CradleHandoff *handoff = new CradleHandoff();
+        if (SYSTEM_BUS.attachHotSync(handoff))
+            hotsync_cradle = new HotSyncBusCradleOf<CradleHandoff>(*handoff);
+        else
+            delete handoff;   // the service logs that the line is not a cradle
+    }
 #endif
 
 #ifdef BUILD_RC2014
@@ -492,7 +506,7 @@ void main_setup(int argc, char *argv[])
 #endif
 
     if (Config.get_hotsync_enabled() && fnSDFAT.running())
-        hotsync.start(hotsync_config_from(Config), fnSDFAT);
+        hotsync.start(hotsync_config_from(Config), fnSDFAT, hotsync_cradle);
 
 #ifdef ESP_PLATFORM
   #ifdef DEBUG

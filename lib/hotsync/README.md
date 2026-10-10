@@ -18,13 +18,18 @@ queued for it on the SD card, and its databases are backed up there.
 | `HotSyncStorage.h` | `HotSyncStorage`, the storage a session reads and writes |
 | `HotSyncFsStorage.h`, `HotSyncFsStorage.cpp` | `HotSyncStorage` on a `FileSystem`, under `/palm` |
 | `HotSyncLinks.h`, `HotSyncLinks.cpp` | `HotSyncLink` over `fnTcpClient` and over an `IOChannel`, and `HotSyncCradleLink`, the settle, deadline and count any serial cradle needs |
+| `HotSyncBusCradle.h` | `HotSyncBusCradle`, a cradle on a line the bus owns, which hands each HotSync over; `HotSyncBusCradleOf`, the adapter from a bus's handoff class |
 | `HotSyncService.h`, `HotSyncService.cpp` | `HotSyncService`, the thread that listens and runs sessions |
 
 ## How it fits
 - `src/main.cpp` starts one `HotSyncService` after the bus when the `[HotSync]` section of
   fnconfig.ini has `enabled=1` and an SD card is mounted. It serves network HotSync (TCP 14238),
-  serial-over-TCP for POSE and CloudpilotEmu (TCP 6416), and on FujiNet-PC a cradle on the host
-  serial device named by `serial_port`.
+  serial-over-TCP for POSE and CloudpilotEmu (TCP 6416), and a serial cradle: on FujiNet-PC the
+  host device named by `serial_port`, and on RS232 builds `serial_port=bus`, the bus line itself.
+- On the bus line, the bus decides when the line carries a HotSync and does its I/O; it hands
+  each one over through `CradleHandoff` in [lib/bus/rs232/](../bus/rs232/), which
+  `HotSyncBusCradleOf<CradleHandoff>` adapts, so this library depends on no bus. Design:
+  [docs/hotsync.md](../../docs/hotsync.md).
 - On the SD card, `/palm/install/` holds files to install on the next sync, `/palm/installed/`
   the ones already installed, and `/palm/backup/<user>/` the backups.
 - Everything up to `HotSyncSession` depends only on `include/global_types.h`;
